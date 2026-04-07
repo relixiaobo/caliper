@@ -8,7 +8,29 @@ and roadmap before writing a single line of Python.
 
 ## Reading order
 
-If you're new, read in this order:
+### If you're picking up the project to work on it
+
+You need the **operational** docs first, then the narrative:
+
+1. **[context.md](context.md)** — **Start here.** Where the related
+   repos live, environment setup, file pointers, the next milestone.
+   This is the "agent handoff" doc.
+
+2. **[roadmap.md](roadmap.md)** — Phases, milestones, success criteria,
+   the effects tracking table. Find your next checkbox.
+
+3. **[reference/](reference/)** — Verbatim artifacts to port:
+   - [baseline-v8.md](reference/baseline-v8.md) — anchor numbers
+     Phase 1 must reproduce
+   - [curated-tasks.md](reference/curated-tasks.md) — the 12 v8 tasks
+     with full goals/refs/buckets
+   - [inherited-artifacts.md](reference/inherited-artifacts.md) — judge
+     prompt, parser, lazy detection set, snapshot formatter, pricing
+     table — the exact code to port
+
+### If you're trying to understand the design
+
+Read the **narrative** docs:
 
 1. **[why.md](why.md)** — The case for evidence-based iteration on agent
    stacks. Why existing eval tools don't fit. What questions caliper helps
@@ -28,9 +50,6 @@ If you're new, read in this order:
 5. **[lessons-learned.md](lessons-learned.md)** — The 8-round story of
    browser-pilot iteration. The bugs we found in our own measurement layer
    that inflated all our earlier numbers by 38%.
-
-6. **[roadmap.md](roadmap.md)** — Phases, milestones, success criteria, and
-   the effects tracking table.
 
 ## Document conventions
 

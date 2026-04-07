@@ -24,18 +24,27 @@ because the docs were ambiguous is high.
   - `git init`, `LICENSE` (MIT), `.gitignore`, minimal `pyproject.toml`
   - **Done when**: `git log` has at least one commit, `cat LICENSE` shows MIT
 
-- [x] **M0.2** Seven P0 docs written
+- [x] **M0.2** Seven narrative docs written
   - `README.md`, `docs/README.md`, `docs/why.md`, `docs/methodology.md`,
     `docs/architecture.md`, `docs/self-evaluation.md`,
     `docs/lessons-learned.md`, `docs/roadmap.md` (this file)
-  - **Done when**: All 8 files exist and are non-stub (each ≥500 lines or
-    a complete short doc)
+  - **Done when**: All 8 files exist and are non-stub
 
-- [ ] **M0.3** Initial commit
-  - All docs committed in a single "Initial documentation scaffolding" commit
+- [x] **M0.3** Initial commit
   - **Done when**: `git log --oneline` shows the commit; the working tree is clean
+  - Commit: `550b2aa Initial documentation scaffolding`
 
-- [ ] **M0.4** Push to remote (optional, when ready)
+- [x] **M0.4** Operational + reference docs (added after the "could
+  another agent pick this up?" check)
+  - `docs/context.md` — operational context (related repos, env, file
+    pointers)
+  - `docs/reference/baseline-v8.md` — anchor numbers
+  - `docs/reference/curated-tasks.md` — 12 v8 tasks with full specs
+  - `docs/reference/inherited-artifacts.md` — verbatim code/prompts
+  - **Done when**: A new contributor can start Phase 1 without needing
+    to read `browser-pilot/tests/agent/run.py`
+
+- [ ] **M0.5** Push to remote (optional, when ready)
   - GitHub repo created
   - First push
   - **Done when**: Remote URL is reachable and matches local
@@ -57,18 +66,29 @@ prove the abstractions work, retire the old `tests/agent/run.py`.
 baseline (Sonnet 23/24) within the 95% confidence interval, plus a fresh
 cost-aware report we couldn't produce before.
 
+> **Before starting Phase 1**, read [`context.md`](context.md) for
+> environment setup and file pointers, and skim
+> [`reference/inherited-artifacts.md`](reference/inherited-artifacts.md)
+> for the verbatim code/prompts you'll port.
+
 ### Milestones
 
 - [ ] **M1.1** Inspect AI installed and one task end-to-end
   - `uv add inspect-ai anthropic openai`
   - Write `src/caliper/__init__.py` placeholder
-  - Write `src/caliper/solvers/text_protocol.py` (~150 lines)
-  - Write `src/caliper/scorers/json_verdict.py` (~50 lines, with the
-    anti-substring-bug regression test)
-  - Write `src/caliper/scorers/judge_stale_ref.py` (~80 lines, port v8
-    prompt)
-  - Write `src/caliper/scorers/lazy_detection.py` (~60 lines)
-  - Write a single `cambridge_smoke` task in `examples/`
+  - Write `src/caliper/solvers/text_protocol.py` (~150 lines) — uses the
+    extractor from
+    [`reference/inherited-artifacts.md` §4](reference/inherited-artifacts.md)
+  - Write `src/caliper/scorers/json_verdict.py` (~50 lines) — port the
+    parser from [§2](reference/inherited-artifacts.md), include the
+    `test_keyword_incorrect_fallback_NOT_substring_bug` regression test
+  - Write `src/caliper/scorers/judge_stale_ref.py` (~80 lines) — port
+    the prompt from [§1](reference/inherited-artifacts.md) verbatim
+  - Write `src/caliper/scorers/lazy_detection.py` (~60 lines) — use the
+    `OBSERVATION_COMMANDS` set from [§3](reference/inherited-artifacts.md)
+  - Write `examples/cambridge_smoke.py` — use the
+    `Cambridge Dictionary--3` task from
+    [`reference/curated-tasks.md`](reference/curated-tasks.md)
   - Run: `inspect eval examples/cambridge_smoke.py --model anthropic/claude-sonnet-4-6`
   - **Done when**: One task completes end-to-end and `inspect view` shows
     the trace
@@ -84,7 +104,8 @@ cost-aware report we couldn't produce before.
 
 - [ ] **M1.3** Twelve v8 tasks ported
   - `examples/browser_pilot_v8/data.jsonl` — 12 curated tasks with bucket
-    metadata
+    metadata, sourced from
+    [`reference/curated-tasks.md`](reference/curated-tasks.md)
   - `examples/browser_pilot_v8/tasks.py` — `@task` definition
   - **Done when**: `inspect eval examples/browser_pilot_v8/tasks.py
     --epochs 2` runs all 24 samples
@@ -104,10 +125,11 @@ cost-aware report we couldn't produce before.
 
 - [ ] **M1.6** v9 baseline produced
   - The first cost-aware baseline. Run with caliper, save as `baselines/v9.json`
-  - Compare to browser-pilot's existing v8 baseline numbers
-  - **Done when**: Differences from v8 are explainable (e.g., real cost is
-    now visible; cache hit rate is reported; pass rate is within 1 of
-    v8's 23/24)
+  - Compare to anchor numbers in
+    [`reference/baseline-v8.md`](reference/baseline-v8.md)
+  - **Done when**: Differences from v8 are explainable (real cost is now
+    visible; cache hit rate is reported; Sonnet pass rate is 22-24/24,
+    gpt-5.4 is 16-18/24)
 
 - [ ] **M1.7** Old `run.py` retired
   - browser-pilot's `tests/agent/run.py` and `v7_baseline.py` deleted (or
