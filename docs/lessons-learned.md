@@ -970,3 +970,36 @@ survive four rounds of correction are:
    and it's the honest record. Phase 2's self-eval
    milestones need to bake this in: *assume your post-mortem
    is wrong until you've run the fix*.
+
+### Known limitation: bp + parallel evals
+
+The M1.6b fix is scoped to serial evals (``--max-samples 1``),
+because bp attaches to the user's real Chrome via CDP and is
+a process-global singleton. If Inspect AI schedules multiple
+samples in parallel, two workers racing to ``bp disconnect`` /
+``bp connect`` would tear down each other's daemon mid-call.
+The existing bp + caliper stack has no per-sample isolation
+story under parallelism, and M1.6b explicitly doesn't try to
+invent one — that would require bp itself to grow ephemeral
+profiles, which is a bp-side change outside the M1.6b scope.
+
+For now the guardrails are:
+
+- ``BP_DEFAULT_SESSION_PROLOGUE`` is documented as "serial
+  evals only" in both module-level comments and in
+  ``bp_agent()``'s docstring
+- ``bp_agent(session_prologue=[])`` is the explicit
+  escape hatch for parallel runs, at the cost of giving up
+  the CHROME_TAB_POLLUTION fix — caller has to choose
+- If a future milestone adds parallel bp support, the
+  prologue API is already general enough to accept a
+  parallel-safe sequence (the ``session_prologue`` parameter
+  is adapter-provided, so the core solver doesn't need to
+  change)
+
+This is the kind of operational caveat that was easy to
+miss in M1.6b's initial implementation — Codex review
+flagged it as a P1 because the default behaviour would
+silently break parallel users. Recording it here so the
+next person who turns on ``--max-samples > 1`` doesn't
+re-learn it the hard way.

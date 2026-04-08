@@ -187,3 +187,150 @@ def test_prologue_list_is_copied_not_shared():
     assert calls[0] == ["tt", "disconnect"]
     assert calls[1] == ["tt", "connect"]
     assert ["tt", "pwned"] not in calls
+
+
+# ---------------------------------------------------------------------------
+# Error propagation (M1.6b post-mortem v2 corrections)
+# ---------------------------------------------------------------------------
+
+
+def _run_solver_once_with_prologue_errors(
+    solver_fn,
+    *,
+    error_steps: set[int],
+    answer: str = "ANSWER: done",
+):
+    """Like ``_run_solver_once`` but the first ``len(error_steps)``
+    prologue calls return ``ERROR...`` strings. Used to test the
+    tolerant/fatal error-handling semantics.
+
+    Returns (calls, captured_stderr, exception_or_None).
+    """
+    import io
+    from contextlib import redirect_stderr
+
+    calls: list[list[str]] = []
+    call_idx_counter = {"n": 0}
+
+    async def fake_run_cli(argv, timeout=60.0):
+        idx = call_idx_counter["n"]
+        call_idx_counter["n"] += 1
+        calls.append(list(argv))
+        if idx in error_steps:
+            return f"ERROR (exit 1): simulated failure of {argv}"
+        return ""
+
+    mock_model = type(
+        "MockModel",
+        (),
+        {"generate": AsyncMock(return_value=type("R", (), {"completion": answer})())},
+    )()
+
+    state = _make_state()
+    captured = io.StringIO()
+    exc: BaseException | None = None
+
+    async def _drive():
+        nonlocal exc
+        try:
+            with (
+                redirect_stderr(captured),
+                patch(
+                    "caliper.solvers.text_protocol.run_cli", side_effect=fake_run_cli
+                ),
+                patch(
+                    "caliper.solvers.text_protocol.get_model", return_value=mock_model
+                ),
+            ):
+                await solver_fn(state, None)  # type: ignore[arg-type]
+        except Exception as e:  # noqa: BLE001
+            exc = e
+
+    asyncio.run(_drive())
+    return calls, captured.getvalue(), exc
+
+
+def test_prologue_last_step_failure_raises_and_aborts():
+    """The final prologue command is the "establish clean state"
+    step. If it fails, the solver must raise RuntimeError — the
+    sample cannot proceed with unknown state. This is the
+    diagnosability fix from M1.6b post-mortem v2: silent prologue
+    failures defeat the purpose of hermetic per-sample state.
+    """
+    solver_fn = text_protocol_agent(
+        cli_name="tt",
+        observation_commands=["read"],
+        system_prompt="test",
+        session_prologue=[
+            ["tt", "disconnect"],
+            ["tt", "connect"],
+        ],
+    )
+
+    # Error on step 1 (the "connect" — the final/fatal step).
+    calls, stderr, exc = _run_solver_once_with_prologue_errors(
+        solver_fn, error_steps={1}
+    )
+
+    assert isinstance(exc, RuntimeError)
+    assert "session_prologue final step" in str(exc)
+    assert "connect" in str(exc)
+    # Both prologue steps ran; start_url open did NOT run.
+    assert calls == [["tt", "disconnect"], ["tt", "connect"]]
+    # Error should have been surfaced to stderr before raising.
+    assert "FAILED (fatal)" in stderr
+    assert "2/2" in stderr  # step number in fatal log
+
+
+def test_prologue_early_step_failure_is_tolerated_with_stderr_warning():
+    """Earlier prologue commands are idempotent cleanup — their
+    failures are logged but do not abort. Example: ``bp disconnect``
+    on a machine with no running bp daemon returns ERROR with exit 1,
+    but that's fine because the subsequent ``bp connect`` will still
+    establish a fresh daemon. If we aborted on the disconnect's
+    failure, every first-sample-of-a-fresh-run would crash."""
+    solver_fn = text_protocol_agent(
+        cli_name="tt",
+        observation_commands=["read"],
+        system_prompt="test",
+        session_prologue=[
+            ["tt", "disconnect"],
+            ["tt", "connect"],
+        ],
+    )
+
+    # Error on step 0 (the "disconnect" — tolerant step).
+    calls, stderr, exc = _run_solver_once_with_prologue_errors(
+        solver_fn, error_steps={0}
+    )
+
+    # No exception: earlier steps are tolerant.
+    assert exc is None
+    # All prologue steps ran, plus the start_url open.
+    assert calls[:2] == [["tt", "disconnect"], ["tt", "connect"]]
+    assert calls[2] == ["tt", "open", "https://example.com/"]
+    # Failure of the disconnect was logged as tolerated.
+    assert "failed (tolerated)" in stderr
+    assert "1/2" in stderr
+
+
+def test_prologue_single_step_failure_is_fatal():
+    """With a 1-element prologue, the single step IS the final
+    step and its failure must abort. No silent degradation."""
+    solver_fn = text_protocol_agent(
+        cli_name="tt",
+        observation_commands=["read"],
+        system_prompt="test",
+        session_prologue=[["tt", "connect"]],
+    )
+
+    calls, stderr, exc = _run_solver_once_with_prologue_errors(
+        solver_fn, error_steps={0}
+    )
+
+    assert isinstance(exc, RuntimeError)
+    assert "session_prologue final step" in str(exc)
+    # start_url open did NOT run.
+    assert calls == [["tt", "connect"]]
+    assert "FAILED (fatal)" in stderr
+    assert "1/1" in stderr

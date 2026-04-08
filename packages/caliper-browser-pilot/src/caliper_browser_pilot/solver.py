@@ -36,6 +36,19 @@ from caliper_browser_pilot.tools import (
 # (Huggingface--3 explicitly logged "tab mismatch"; Apple--0 ep 2 and
 # Allrecipes--0 showed cross-sample content bleed). See
 # ``docs/lessons-learned.md`` M1.6 section and the M1.6b roadmap entry.
+#
+# **IMPORTANT — parallelism**: bp is a *process-global singleton* that
+# attaches to the user's real Chrome via CDP. It is NOT safe to run
+# under parallel Inspect AI samples (``--max-samples > 1``): two
+# workers racing to ``bp disconnect`` / ``bp connect`` would tear
+# down each other's daemon mid-call. This default is for **serial
+# evals only** (``inspect eval --max-samples 1``). If you need to
+# run bp under a parallel scheduler, pass
+# ``bp_agent(session_prologue=[])`` to disable the reset — but note
+# that without the reset you are back to the M1.6 tab-pollution
+# failure mode. There is no current parallel-safe bp story; that
+# would require bp itself to support per-sample ephemeral profiles,
+# which it does not (as of bp 0.1.6).
 BP_DEFAULT_SESSION_PROLOGUE: list[list[str]] = [
     ["bp", "disconnect"],
     ["bp", "connect"],
@@ -58,12 +71,22 @@ def bp_agent(
         cli_timeout: Per-command subprocess timeout in seconds.
         session_prologue: Override for the per-sample bp reset
             sequence. Defaults to ``BP_DEFAULT_SESSION_PROLOGUE``
-            (``disconnect`` + ``connect``). Pass ``[]`` to disable
-            the reset entirely — only do that if you're sure sample
-            independence isn't required (e.g. single-sample smoke
-            tests). Pass a custom list to substitute your own
-            sequence (e.g. ``[["bp", "close", "--all"]]``) for
-            experimentation.
+            (``disconnect`` + ``connect``).
+
+            Pass ``[]`` to disable the reset entirely. This is the
+            only safe choice when running under a parallel Inspect
+            AI scheduler (``--max-samples > 1``) — see the
+            ``BP_DEFAULT_SESSION_PROLOGUE`` module comment for why
+            bp is not parallel-safe. It is also reasonable for
+            single-sample smoke tests where hermetic per-sample
+            state isn't required.
+
+            Pass a custom list to substitute your own sequence
+            (e.g. ``[["bp", "close", "--all"]]``) for
+            experimentation, keeping in mind that
+            ``text_protocol_agent`` enforces "last command must
+            succeed" semantics — the final argv in the list is the
+            one whose failure aborts the sample.
     """
     skill_path = system_prompt_file
     if skill_path is None:

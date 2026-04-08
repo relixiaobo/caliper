@@ -29,6 +29,7 @@ guarantee.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
@@ -92,8 +93,33 @@ def text_protocol_agent(
             by adapters whose CLI tool has persistent cross-sample
             state that needs resetting (e.g. ``bp_agent`` passes
             ``[["bp", "disconnect"], ["bp", "connect"]]`` to avoid
-            the M1.6 CHROME_TAB_POLLUTION failure class). Output from
-            prologue commands is discarded; only errors surface.
+            the M1.6 CHROME_TAB_POLLUTION failure class).
+
+            **Error semantics**: the *last* argv in the list is
+            treated as the "establish clean state" step and MUST
+            succeed — if ``run_cli`` returns an ``ERROR...`` string,
+            the solver raises ``RuntimeError`` and the sample
+            aborts. Earlier argvs are treated as tolerant idempotent
+            cleanup — their failures are logged to stderr (so
+            they're visible in the Inspect AI run output) but do
+            not abort. This matches bp's ``disconnect``-then-
+            ``connect`` pattern: the disconnect can legitimately
+            fail on a fresh machine (no daemon to kill), but the
+            connect must work.
+
+            **Parallelism warning**: ``session_prologue`` is a
+            per-sample hook, not a per-worker hook. If the
+            underlying CLI tool has machine-global state (as bp
+            does — it attaches to the user's real Chrome), and
+            Inspect AI runs samples in parallel (``--max-samples
+            > 1``), prologue commands from different workers will
+            interleave and clobber each other. **Use prologues only
+            with serial evals** (``--max-samples 1``) unless the
+            adapter CLI has first-class per-sample isolation.
+            Adapters that know they're being used in parallel
+            should pass ``session_prologue=[]`` to disable the
+            reset, or provide a custom prologue that's
+            parallel-safe.
     """
     obs_set = frozenset(observation_commands)
     fmt = output_formatter or _default_output_formatter
@@ -120,11 +146,39 @@ def text_protocol_agent(
         # Session prologue: reset the CLI tool's cross-sample state
         # BEFORE taking the initial snapshot. Must run before
         # ``start_url`` open so the opening observation reflects a
-        # clean session. Output is intentionally discarded — the
-        # prologue's job is to reset state, not to inform the agent.
-        # See M1.6b for the failure class this guards against.
-        for argv in prologue:
-            await run_cli(list(argv), timeout=cli_timeout)
+        # clean session. See M1.6b for the failure class this
+        # guards against.
+        #
+        # Error semantics (see docstring): the last prologue argv
+        # is the "establish clean state" step and MUST succeed.
+        # Earlier argvs are idempotent cleanup whose failures are
+        # surfaced but tolerated (e.g. ``bp disconnect`` fails
+        # harmlessly on a fresh machine with no daemon, but
+        # ``bp connect`` must work). All prologue errors are
+        # written to stderr so they're visible in the Inspect AI
+        # run log — the purpose of the prologue is hermetic
+        # per-sample state, and silent reset failures would
+        # defeat the point and be very hard to diagnose.
+        for i, argv in enumerate(prologue):
+            raw = await run_cli(list(argv), timeout=cli_timeout)
+            if raw.startswith("ERROR"):
+                is_final = i == len(prologue) - 1
+                first_line = raw.splitlines()[0] if raw else "ERROR"
+                severity = "FAILED (fatal)" if is_final else "failed (tolerated)"
+                print(
+                    f"[caliper] session_prologue step {i + 1}/{len(prologue)} "
+                    f"{severity}: {list(argv)!r} -> {first_line}",
+                    file=sys.stderr,
+                )
+                if is_final:
+                    raise RuntimeError(
+                        f"session_prologue final step {list(argv)!r} "
+                        f"failed: {first_line}. The final prologue "
+                        "command is the one that establishes clean "
+                        "per-sample state; proceeding with unreset "
+                        "state would defeat the point of the "
+                        "prologue. Aborting sample."
+                    )
 
         # Auto-open start_url so the agent always sees an initial page.
         # No shell quoting needed — run_cli takes an argv list and
