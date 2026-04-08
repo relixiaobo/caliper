@@ -19,7 +19,6 @@ import asyncio
 import shlex
 from pathlib import Path
 
-import pytest
 
 from caliper.runtime.subprocess import run_cli
 

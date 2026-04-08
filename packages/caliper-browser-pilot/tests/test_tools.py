@@ -7,7 +7,6 @@ set, SKILL path resolver) without making any network calls or starting bp.
 from __future__ import annotations
 
 import json
-import os
 
 from caliper_browser_pilot.tools import (
     BP_OBSERVATION_COMMANDS,

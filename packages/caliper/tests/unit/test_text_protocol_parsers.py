@@ -25,7 +25,7 @@ Regression history:
   split, and downstream code gets argv lists only.
 """
 
-from caliper.parsers import ParsedCommand, extract_answer, extract_commands
+from caliper.parsers import extract_answer, extract_commands
 
 # ---------------------------------------------------------------------------
 # Cases from inherited-artifacts.md §4 — must keep passing.
