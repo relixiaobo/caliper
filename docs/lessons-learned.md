@@ -559,143 +559,239 @@ principles. Phase 1 shows they work at the scale of "build a
 framework". Phase 2 (self-eval) and Phase 3 (second consumer)
 will show whether they generalise.
 
-## M1.6: environmental drift makes v8 unreproducible in 24 hours
+## M1.6: the post-mortem that needed its own post-mortem
 
-This is the single most important methodology finding of Phase 1,
-and possibly of the whole caliper project so far.
+M1.6 produced caliper's first self-measured baseline against the
+12 v8 curated tasks. The target was Sonnet 22-24/24 and GPT-5.4
+16-18/24, ±1 of the v8 anchors, with Apple--3 reproducing its
+canary failure mode.
 
-M1.6 was meant to validate that caliper produces v8-equivalent
-numbers: Sonnet 22-24/24 and GPT-5.4 16-18/24 on the 12 curated
-tasks, plus Apple--3 reproducing its canary failure. The done
-criteria were tight ±1-sample tolerances written with confidence.
+**Neither target held.** Sonnet 19/24, GPT-5.4 13/24 with 24/24
+lazy, Apple--3 passed both epochs, 5 other Sonnet samples hit
+max_turns=12 instead.
 
-**None of them held.**
+The first-pass write-up of this deviation (commit 1536416, the
+original `baselines/v9.json` `methodology_notes`, and the first
+draft of this section) labelled all of it "environmental drift"
+and called it "the most important methodological finding of
+Phase 1". **That write-up was wrong in exactly the way the rest
+of this file exists to prevent.** I wrote it after reading
+**one** Sonnet trace and **zero** GPT-5.4 traces, then applied a
+single root-cause label to five distinct failures. The only
+reason I noticed was the user asking me to "fundamentally
+analyze the test process and results", which forced me to go
+look at the evidence I should have read on day one.
 
-v9 measurement (2026-04-08, exactly 24 hours after v8's
-2026-04-07 measurement, same machine, same workspace code as of
-commit 152e668):
+This section is what the post-mortem should have said the first
+time. The original overclaims are recorded below under "what
+does not hold" so the failure is on the permanent record.
 
-| Metric | v8 | v9 | Delta |
-|---|---|---|---|
-| Sonnet pass | 23/24 | 19/24 | **−4** |
-| Apple--3 failure mode | fail | **pass** | canary didn't trigger |
-| GPT-5.4 pass | 17/24 | 13/24 | **−4** |
-| GPT-5.4 lazy count | 2 | **24** | **+22 — every sample** |
-| Sonnet mean tokens/run | ~52K | 105K | 2× |
-| Sonnet wall time / 24-run | unknown | 46:21 | |
-| GPT-5.4 wall time / 24-run | unknown | 1:58 | |
+### The meta-error: a measurement bug in my own narrative
 
-### What actually happened
+Methodology principle 4 is "failure attribution before aggregate
+reporting". The first draft violated it: I aggregated 5 failures
+into one narrative before attributing **one** of them from
+trace evidence. The *numbers* in `v9.json` were correct; the
+*story* about them was not.
 
-**Sonnet: 5 TOOL_LIMIT failures distributed across 4 buckets.**
-All five failed with `msgs=26` (hit max_turns=12) and empty
-ANSWER. None was Apple--3. The failures were Wolfram Alpha--0,
-Allrecipes--0, Apple--0, Huggingface--3, BBC News--5. Apple--0
-epoch 2 ran **137 commands in 12 turns** — a clear retry-loop
-signature. Reading the Wolfram Alpha--0 trace, the agent typed
-the query, got a stale page back (Wolfram Alpha's `--submit`
-didn't navigate as expected), navigated manually, got Merriam-
-Webster instead (???), hallucinated the answer it expected, was
-corrected by real tool output, and eventually ran out of turns.
+This is the same failure mode as the v0 substring bug from the
+pre-history above: a broken metric (here, my first-pass
+narrative) that made things look like a clean story, so I
+happily wrote conclusions against it. The lesson isn't new —
+it's literally the reason caliper exists — but apparently I
+needed to fail at it one more time to internalise it as a
+workflow habit, not just an abstract principle.
 
-The root cause is environmental: 24 hours of network degradation
-(API latency was ~6s per call vs <500ms normal) plus site drift
-on Wolfram Alpha / Allrecipes / BBC News. caliper's
-implementation is correct. The baseline numbers reflect reality
-on the day they were measured.
+Going forward: any baseline deviation claim in this project
+must cite at least one trace per failure class, and the claim
+must be falsifiable. "5 TOOL_LIMIT failures split 2/1/2 across
+three root causes" is falsifiable. "Environmental drift" is
+not.
 
-**GPT-5.4: every single sample was lazy**. 24/24 lazy, vs v8's
-2/24. The 13 "passes" are all pass-from-training-data — the
-agent never observed the page. Mean uncached input per run: 930
-tokens. (Sonnet's: 96,840.) GPT-5.4 gave up in under 5 seconds
-per sample.
+### What actually caused the 5 Sonnet failures
 
-The root cause is model drift: OpenAI's gpt-5.4 behaves
-differently on 2026-04-08 than on 2026-04-07. No API-contract
-guarantees cross-day consistency. The test-sets.md principle 2
-(staleness) and principle 9 (reproducibility) warned about this
-— the M1.6 experience is the first time Phase 1 hit it in
-practice.
+(This section has been rewritten twice. The history is recorded
+in "what does not hold" below — the short version is that I had
+to go back and read the traces again after a Codex review round
+caught that I'd mis-classified Apple--0.)
 
-### Why this is the most important finding
+After reading every Sonnet TOOL_LIMIT trace, the 5 failures
+split **1 / 1 / 3** — with CHROME_TAB_POLLUTION clearly
+dominant:
 
-The naive interpretation of these numbers is "caliper failed to
-reproduce v8, M1.6 is broken". The *correct* interpretation is
-"caliper successfully surfaced environmental + model drift that
-a raw pass-rate baseline would have hidden".
+| Sample | Class | Trace evidence |
+|---|---|---|
+| Wolfram Alpha--0 | **SITE_RENDER** | The derivative answer (`11.2`) appears *only* inside SVG path coordinates. Agent writes: *"All three occurrences of '11.2' are SVG path coordinates, not the actual result. The result is rendered as an image."* Runs out of turns trying to extract the number through DOM selectors. |
+| BBC News--5 | **REF_STALE** | First `bp open` on the reference URL returns the literal page title *"BBC - 500: Internal Server Error"*. Agent correctly falls back to a Google search but cannot recover the intended article. |
+| Huggingface--3 | **CHROME_TAB_POLLUTION** | Agent logs verbatim: *"The browser is clearly rendering Coursera content even though the URL shows Hugging Face. It seems there's a tab mismatch."* Trace contains 28 Coursera and 6 Allrecipes mentions during what should be a Hugging Face task. |
+| Allrecipes--0 (ep 2) | **CHROME_TAB_POLLUTION** | 26 BBC mentions appear during the Allrecipes task — previous-sample BBC state bleeding into the current sample. |
+| Apple--0 (ep 2) | **CHROME_TAB_POLLUTION** | Initial `bp open` on the MacBook Air page correctly returned `From $1099` / `From $1299` prices — **not** an "empty React shell" (as the first correction draft wrongly claimed). Later in the trace, tool output switches to Allrecipes content, matching the same session-pollution signature. 137 commands in 12 turns is the agent retry-looping through this pollution. |
 
-Specifically:
+**CHROME_TAB_POLLUTION is the dominant finding.** The mechanism
+is specific and reproducible: bp attaches to the user's *real*
+Chrome (that's its design point — it keeps real logins and
+cookies), which means bp's Chrome state is *not* hermetic
+across samples. Previous-sample URLs, tab navigations, and
+even the user's own ambient browser activity can leak into the
+current sample's view of the page. caliper's
+`text_protocol_agent` assumes bp is per-sample clean; it isn't.
 
-1. Without **per-bucket failure attribution** (methodology
-   principle 4), all you'd know is "Sonnet dropped from 23/24 to
-   19/24". With caliper: you know the 5 failures all share
-   `TOOL_LIMIT` tag, distributed across all 4 buckets, so it's
-   an environmental issue not a capability gap.
+There's also a fourth sample where CHROME_TAB_POLLUTION
+*might* be present: the Wolfram Alpha trace, even though
+SITE_RENDER is the proximate cause of running out of turns,
+contains two session-pollution signals. Mid-trace, the agent
+clicks an element and lands on Merriam-Webster, then notes
+*"this appears to be the user's actual browser state — a
+different tab or navigation occurred"*. And the final `bp net`
+in the same trace lists exactly one request: a `GET
+https://www.allrecipes.com/`. So pollution may in fact touch
+4 of 5 failures, but for Wolfram the SVG issue is what
+actually ended the episode.
 
-2. Without **lazy detection** (caliper's scorer from M1.1),
-   gpt-5.4's 13/24 would look like a plausible 54% agent. With
-   caliper: you see 24/24 lazy and realise it's 0% *real*
-   performance, 100% training-data leakage.
+The fix surface for CHROME_TAB_POLLUTION is concrete: either
+`bp` needs to support a per-sample ephemeral profile, or
+caliper's text-protocol solver needs to explicitly reset tabs
+at sample start. This is a real M1.7-class bug with a real
+patch, not "drift".
 
-3. Without **cache_hit_rate visibility** (M1.2's UsageSummary),
-   you wouldn't know that gpt-5.4's 73.9% cache hit rate is
-   auto-prefix-caching from OpenAI while Sonnet's 0.0% is
-   Anthropic's explicit-cache-required default. Same benchmark,
-   two completely different cache patterns invisible at the
-   token level.
+### What actually caused GPT-5.4's 24/24 lazy rate
 
-4. Without **wall-time tracking**, you wouldn't see the absurd
-   asymmetry: Sonnet 46:21 (honest work, slow network) vs
-   GPT-5.4 1:58 (lazy fast-fail). Same task set, 23× time ratio.
+The pattern is uniform across all 24 runs: each sample gets
+task + initial (near-empty) snapshot, the agent emits one
+turn containing `ANSWER:` directly from training data, the
+conversation ends. For every failed sample:
+`message_count = 3`, `commands_run = 0`, uncached input mean
+= 930 tokens. Sonnet's mean on the same tasks: 96,840 tokens.
 
-**Every single one of these signals is exactly what methodology
-principles 1-5 were written to produce**. The Phase 1 port of
-browser-pilot's methodology to caliper — M1.1's two scorers,
-M1.2's usage observability, M1.4's bucket aggregation, M1.6's
-measurement — works together as a system.
+Some of the training-data answers happen to be correct (BBC
+fossil-fuels article, where the reference hasn't moved). Some
+are hallucinated (Allrecipes recipe names the agent never
+saw). Some are simply wrong in checkable ways (GitHub
+storage delta: agent says 30 GB, real answer is 48 GB).
 
-### What I'd do differently
+The first draft labelled this "model drift". **That label is
+not evidence-based.** I did not compare the gpt-5.4 API
+behaviour on 2026-04-07 vs 2026-04-08; I only observed the
+2026-04-08 behaviour. The correct label is "single-turn
+training-data answer" — a behavioural description, not a
+causal claim. Possible causes include:
+- Initial snapshot content being fed differently than in v8
+- Inspect AI OpenAI Responses adapter context formatting
+- Actual model-level drift at the provider
+- Text-protocol prompt interacting badly with gpt-5.4's
+  tool-use training
 
-Writing this in retrospect, the M1.6 done criteria were wrong.
-"Sonnet 22-24/24" assumed reproducibility that isn't there. The
-correct criterion is something like:
+M1.6 does not distinguish between these. A future milestone
+could — run the same tasks through the legacy `run.py` path
+on the same day and compare — but M1.6 as-run cannot.
 
-> caliper produces a reproducible baseline JSON that **explains
-> every deviation from the previous baseline with a failure
-> attribution tag and a root-cause note**. Matching the previous
-> numbers exactly is not required and not expected.
+What M1.6 **does** tell us, and this survives the post-mortem,
+is that **caliper's `lazy_detection` scorer surfaced the
+collapse immediately**. Without it, 13/24 would read as a
+plausible 54% agent. With it, `lazy_rate = 1.0` shows pass
+rate is measuring training-data recall, not agent capability.
 
-I've rewritten the M1.6 entry in roadmap.md with this reframe.
-The original tight criteria stay as a historical note showing
-what my v0.1 expectations were vs what actually happened.
+### The findings that do hold
 
-### The meta-lesson
+Stripping out the overclaims, what M1.6 actually proved:
 
-Every scientific benchmark becomes less reproducible the day
-after it's measured. Three mechanisms:
+1. **`lazy_detection` catches silent capability collapse.**
+   gpt-5.4 at 13/24 looks fine on pass-rate alone; caliper
+   shows it's 0/24 real performance. This is the M1.1
+   two-scorer invariant firing exactly as designed. ✓
 
-1. **Model drift**: providers silently update their models;
-   "gpt-5.4" on Monday ≠ "gpt-5.4" on Tuesday
-2. **Site drift**: benchmark target pages change layout,
-   content, and navigation patterns continuously
-3. **Environmental drift**: network, rate limits, concurrency,
-   even time-of-day temperature affect timing and retry
-   behaviour
+2. **Per-bucket failure attribution separates capability
+   from environment.** After two rounds of re-reading, 5
+   Sonnet failures resolved into 3 root-cause classes
+   pointing at different fixes. A single bucket-free pass
+   rate would have called this "Sonnet got worse". ✓
 
-caliper cannot prevent drift. What it *can* do, and what M1.6
-proved it does, is **surface the drift explicitly** rather than
-silently roll it into a single pass-rate number. A baseline
-JSON that carries failure tags, per-bucket cache rates, and
-lazy counts makes the drift debuggable. A single "Sonnet: 23/24"
-line does not.
+3. **Cache-hit-rate visibility surfaces provider-specific
+   behaviour v8 couldn't see.** Sonnet 0.0% (Anthropic
+   default doesn't enable explicit `cache_control`) vs
+   gpt-5.4 73.9% (OpenAI prefix auto-cache) is a factual
+   observation about how UsageSummary normalises
+   cross-provider cache data. ✓
 
-This is why baselines must be timestamped, tagged with model
-snapshots, and accompanied by per-sample failure attribution.
-v9.json records all of this. If M2.7 (stability score) ever
-lands, it will quantify the noise floor across multiple
-re-runs and turn this qualitative observation into a hard
-number.
+4. **bp's Chrome session is not hermetic across samples
+   and it is the dominant source of Sonnet's M1.6 failures.**
+   3 of 5 failures are directly attributable to session-state
+   pollution (and a 4th shows pollution signals). Concrete,
+   reproducible bp bug with a concrete fix (per-sample
+   ephemeral profile / explicit tab reset). ✓
 
-**M1.6 produced the most honest agent-eval baseline I've ever
-seen in my own work. It's 4 samples "worse" than v8 on both
-models. It's also 10× more useful because it tells you why.**
+### The findings that do NOT hold
+
+Claims removed across two rounds of post-mortem correction.
+Recording them explicitly so the failure mode is on the
+permanent record, not edited out of git history.
+
+**From the first draft (pre-trace read):**
+
+1. ❌ **"Environmental drift" as a single root cause.** The 5
+   failures are at least 3 distinct classes, dominated by one
+   specific bp bug. "Environmental" was a handwave that
+   covered for not having looked.
+2. ❌ **"Slow network to Anthropic API" as the driver of
+   TOOL_LIMIT hits.** Per-turn API latency was never
+   measured; I inferred it from 46:21 wall time. Wall time
+   is consistent with slow *page loads* and long retry
+   loops, not specifically with slow API.
+3. ❌ **"gpt-5.4 model drift" as the cause of the lazy
+   pattern.** Not measured. Replaced with the behavioural
+   description "single-turn training-data answer" until
+   properly tested with a controlled comparison.
+4. ❌ **"The single most important methodological finding of
+   Phase 1."** Rhetorical inflation. The lazy-detection win
+   is real, but it's the *same* M1.1 two-scorer invariant
+   firing on a second data point.
+5. ❌ **"Most honest agent-eval baseline I've ever seen in my
+   own work."** The *numbers* are honest; the *first-draft
+   narrative* was not. Baselines are made honest by the
+   analysis, not by the aggregation.
+
+**From the second draft (after reading 5 traces, caught by
+Codex review):**
+
+6. ❌ **"Apple--0 ep 2 SITE_RENDER / empty React shell."** The
+   trace shows the first `bp open` on the MacBook Air page
+   already returned populated `From $1099` / `From $1299`
+   entries — the page *did* render. The real failure mode is
+   CHROME_TAB_POLLUTION (Allrecipes content appears later in
+   the trace). I had classified it from the shape of the
+   numbers ("137 commands in 12 turns, must be rerender
+   retry loop") without reading deeply enough into the
+   messages. Codex caught this by directly reading the
+   `.eval` log.
+7. ❌ **"SITE_RENDER × 2."** Only Wolfram Alpha is a clean
+   SITE_RENDER case. The corrected bucket size is ×1, and
+   CHROME_TAB_POLLUTION went from ×2 to ×3.
+
+Each correction round shrank the error bars by forcing me to
+read one more trace. The lesson is that **the number of
+traces I've actually read is a better predictor of narrative
+accuracy than the number of post-mortem iterations.**
+
+### The meta-lesson (that actually holds)
+
+**A post-mortem written from the shape of the numbers instead
+of from the trace evidence is itself an uninstrumented agent
+step.** It produces a plausible answer (the narrative) without
+ever observing the page (the traces). The cure is the same as
+for any lazy agent: require tool calls before ANSWER — here,
+require trace citations before any root-cause claim.
+
+I had to learn this twice in the same milestone. The first
+correction round ("read the traces") caught the
+"environmental drift" handwave and the bogus gpt-5.4 "model
+drift" claim. The second round ("read them *again*, properly")
+caught the Apple classification error, and only happened
+because a Codex review actually opened the `.eval` log and
+checked. Both corrections came from the same source — looking
+at the evidence — and both were necessary. A claim that
+survives one read can still be wrong; what matters is whether
+the read is thorough and whether you were ready to admit
+surprise.
+
+That is the M1.6 lesson I'm actually confident in, because I
+had to live through failing it in two different ways.

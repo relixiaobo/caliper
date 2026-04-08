@@ -259,16 +259,19 @@ columns we couldn't produce before.
 - [x] **M1.6** v9 token+cache baseline (2026-04-08)
 
   The first baseline produced under caliper. Validates Phase 1's
-  thesis: caliper produces a reproducible, honest, per-bucket
-  token+cache view that v8 could not. **The v9 numbers deviate
-  from v8 anchors**, and documenting that deviation is *more*
-  valuable than matching them — it is exactly the environmental
-  drift caliper is designed to surface.
+  thesis for some of its parts (per-bucket attribution,
+  lazy_detection as a second scorer, cache_hit_rate visibility)
+  while surfacing a reproducible bp bug (Chrome tab pollution
+  across samples) that v8's raw pass-rate metric would not have
+  caught. **The v9 numbers deviate from v8 anchors**, and after
+  a post-mortem correction round, the deviations are documented
+  with per-sample trace-backed root causes instead of a single
+  "environmental drift" handwave.
 
   Delivered:
   - `baselines/v9.json` — structured per-model baseline with
     per-bucket breakdown, failed-sample attribution tags,
-    v8 anchor comparison, and methodology notes
+    v8 anchor comparison, and corrected methodology notes
   - `baselines/build_v9.py` — one-off script that rebuilds v9.json
     from the source `.eval` logs. The logs themselves are NOT
     committed (too large); v9.json is the portable anchor.
@@ -286,65 +289,108 @@ columns we couldn't produce before.
   | GPT-5.4 lazy count | 2 | **24** | **+22** |
   | GPT-5.4 cache_hit_rate | unknown | 73.9% | NEW |
 
-  Deviations and root-cause analysis:
+  Deviations — root-cause analysis (post-mortem corrected):
 
   1. **Sonnet 19/24 instead of 23/24**. All 5 failures share the
-     same failure mode: hit max_turns=12, empty ANSWER, attribution
-     tag `TOOL_LIMIT`. Failed samples are **not Apple--3** (the v8
-     canary), they are Wolfram Alpha--0, Allrecipes--0, Apple--0,
-     Huggingface--3, BBC News--5 — distributed across all 4
-     buckets. Root cause: slow network + site drift (Wolfram Alpha
-     / Allrecipes / BBC News navigation patterns) between v8's
-     measurement on 2026-04-07 and v9's on 2026-04-08. The agents
-     retry more, each retry eats turns, some hit 12 before
-     answering. Apple--0 ep=2 ran 137 commands in 12 turns — a
-     clear retry-loop signature.
+     same shape: hit max_turns=12, empty ANSWER, attribution tag
+     `TOOL_LIMIT`. Failed samples are **not Apple--3** (the v8
+     canary), they are Wolfram Alpha--0, Allrecipes--0, Apple--0
+     (ep 2), Huggingface--3, BBC News--5. Trace review resolved
+     them into **3 classes with CHROME_TAB_POLLUTION dominant**:
+
+     - **SITE_RENDER × 1**: Wolfram Alpha--0. The derivative
+       answer (11.2) appears only inside SVG path coordinates;
+       agent writes *"the result is rendered as an image"* and
+       runs out of turns trying to extract the number via DOM
+       selectors.
+     - **REF_STALE × 1**: BBC News--5. First `bp open` on the
+       reference URL returns the literal page title
+       *"BBC - 500: Internal Server Error"*.
+     - **CHROME_TAB_POLLUTION × 3**: Huggingface--3 contains
+       the explicit agent observation *"the browser is clearly
+       rendering Coursera content even though the URL shows
+       Hugging Face. It seems there's a tab mismatch"*;
+       Allrecipes--0 has 26 BBC mentions bleeding into the
+       Allrecipes task; Apple--0 ep 2 — where the first
+       correction draft was wrong — initially loaded the
+       MacBook Air page with `$1099`/`$1299` prices present
+       (NOT an empty React shell), then later tool output
+       switches to Allrecipes content. CHROME_TAB_POLLUTION is
+       the dominant M1.6 finding: bp attaches to the user's
+       real Chrome, its session state leaks across samples,
+       and caliper's text-protocol solver assumes hermetic
+       state per sample. The Wolfram trace also shows
+       session-pollution signals (final `bp net` lists only an
+       allrecipes.com GET), so this class may touch 4 of 5
+       failures.
+
+     The first-draft attribution was "environmental drift". The
+     second-draft correction said `SITE_RENDER × 2` and
+     mis-classified Apple--0. The third draft (this entry,
+     post Codex review) is what the traces actually show. See
+     [lessons-learned.md](lessons-learned.md#m16-the-post-mortem-that-needed-its-own-post-mortem)
+     for the full correction history.
 
   2. **Apple--3 did not reproduce its v8 canary failure**. Both
      epochs passed cleanly. The canary was originally there to
-     catch "max_turns silently relaxed", but the check is
+     catch "max_turns silently relaxed", but that check is
      satisfied via alternative samples — 5 other samples hit
-     exactly max_turns=12 with empty answer, proving the limit is
-     still enforced. `reproduce_check.max_turns_limit_still_enforced
+     exactly max_turns=12 with empty answer, proving the limit
+     is still enforced. `reproduce_check.max_turns_limit_still_enforced
      = true` in v9.json.
 
   3. **GPT-5.4 went from 2 lazy hits in v8 to 24 lazy hits in v9.**
      Every single sample produced an answer without any real
      observation. The 13 "passes" are all pass-from-training-data.
-     The v9 uncached_input_tokens mean is 930 per run; Sonnet's is
-     96K. Root cause: either gpt-5.4 behaviour drift in the 24
-     hours since v8, or the OpenAI Responses API adapter now
-     passes context differently. Either way: gpt-5.4's apparent
-     "54.2% pass rate" is **zero real passes** when measured via
-     lazy detection. **This is the single most important
-     methodological finding of Phase 1** — a naive pass-rate
-     metric would have declared gpt-5.4 a plausible agent; caliper
-     (via lazy_detection) shows it's entirely hallucinating.
+     The v9 uncached_input_tokens mean is 930 per run; Sonnet's
+     is 96,840 on the same tasks. Uniform pattern:
+     `message_count=3`, `commands_run=0`, single-turn ANSWER
+     from training data. Some correct (BBC fossil fuels), some
+     hallucinated (Allrecipes recipe names), some simply wrong
+     (GitHub storage delta: agent says 30 GB, real answer is
+     48 GB).
+
+     The first draft labelled this "gpt-5.4 model drift" — **not
+     evidence-based**. The corrected label is "single-turn
+     training-data answer", a behavioural description not a
+     causal claim. Actual cause (model drift vs Inspect AI
+     OpenAI Responses adapter changes vs prompt/training
+     interaction) is **not** established by M1.6. What M1.6
+     *does* show: `lazy_detection` surfaces the collapse
+     immediately — without it, 13/24 would read as a plausible
+     54% agent.
 
   4. **Cache hit rate asymmetry**: 0.0% on Anthropic (default
      doesn't enable explicit `cache_control`) vs 73.9% on OpenAI
      (automatic prompt caching kicks in for prefixes ≥ 1024
      tokens). Same workload, dramatically different cache
-     patterns — an insight that v8 couldn't see at all because it
-     measured raw tokens only.
+     patterns — an insight that v8 couldn't see at all because
+     it measured raw tokens only.
 
   **Relaxed done criteria** (vs original spec):
 
   - ~~Sonnet 22-24/24 within ±1 of v8~~ → "Sonnet baseline
-    committed with failure-mode attribution and root-cause notes
-    for any deviation from v8"
+    committed with trace-backed failure attribution for each
+    deviation from v8, not a single handwave label"
   - ~~GPT-5.4 16-18/24 within ±1 of v8~~ → same, for gpt-5.4
   - ~~Apple--3 must fail~~ → "max_turns=12 enforcement verified
     via any sample hitting the limit"
   - ✓ `baselines/v9.json` exists and is committed
   - ✓ Per-bucket `cache_hit_rate` is reported, and the Anthropic/
     OpenAI caching asymmetry is documented
+  - ✓ (added post-mortem) Every Sonnet failure is classified
+    from trace evidence, not from aggregate numbers
 
   The original tight criteria assumed environmental stability
-  that the real world doesn't provide. **caliper's value is not
-  matching v8 exactly; it's producing an honest measurement plus
-  the failure attribution needed to explain any delta**. This
-  reframe is itself a Phase 1 lesson worth recording.
+  that the real world doesn't provide. The first-pass
+  post-mortem overcorrected in the other direction, labelling
+  everything "environmental drift" from a handful of traces.
+  **The actual Phase 1 lesson from M1.6 is methodological: a
+  post-mortem written from the shape of the numbers instead of
+  from trace evidence is itself an uninstrumented agent step,
+  and caliper's own discipline has to apply to its own
+  narratives.** See
+  [lessons-learned.md](lessons-learned.md#m16-the-post-mortem-that-needed-its-own-post-mortem).
 
 - [ ] **M1.7a** Heroku smoke task port
 
@@ -386,18 +432,18 @@ columns replace the original $ columns per the M1.2 re-scope.
 
 | Metric                       | v8 (run.py) | v9 (caliper) | Delta | Notes |
 |---|---|---|---|---|
-| Sonnet judge pass            | 23/24       | **19/24**    | -4    | 5 TOOL_LIMIT failures (network+site drift) |
+| Sonnet judge pass            | 23/24       | **19/24**    | -4    | 5 TOOL_LIMIT failures: SITE_RENDER×1 (Wolfram SVG), REF_STALE×1 (BBC 500), CHROME_TAB_POLLUTION×3 (Apple/Allrecipes/Huggingface) |
 | Sonnet Apple--3 failure      | run 2 fails | **both pass** | —     | Canary didn't trigger; max_turns still enforced via 5 other samples |
-| Sonnet total tokens          | ~292K       | **2,524,979** | 8.6×  | Retry loops in TOOL_LIMIT cases |
-| Sonnet mean tokens / run     | ~52K        | **105,208**  | 2.0×  | Sum: 5 failed runs drag the mean up |
+| Sonnet total tokens          | ~292K       | **2,524,979** | 8.6×  | Retry loops in TOOL_LIMIT cases (Apple--0 ep 2: 137 commands in 12 turns) |
+| Sonnet mean tokens / run     | ~52K        | **105,208**  | 2.0×  | 5 failed runs drag the mean up |
 | Sonnet uncached_input_tokens | unknown     | **96,840**   | NEW   | First time visible |
 | Sonnet cache_hit_rate        | unknown     | **0.0%**     | NEW   | Anthropic default caching disabled |
 | Sonnet lazy count            | 0           | **0**        | match | lazy_detection consistent across versions |
-| GPT-5.4 judge pass           | 17/24       | **13/24**    | -4    | Outside ±1; real model drift |
-| GPT-5.4 lazy count           | 2           | **24**       | +22   | **Every sample was lazy** — biggest v9 finding |
+| GPT-5.4 judge pass           | 17/24       | **13/24**    | -4    | Outside ±1; cause not established (see post-mortem) |
+| GPT-5.4 lazy count           | 2           | **24**       | +22   | Uniform single-turn training-data answer pattern |
 | GPT-5.4 cache_hit_rate       | unknown     | **73.9%**    | NEW   | OpenAI automatic prompt caching |
-| GPT-5.4 mean tokens / run    | ~20K        | **3,678**    | 0.18× | Lazy fail → fast, cheap, wrong |
-| Sonnet wall time (24-run)    | unknown     | **46:21**    | NEW   | Slow network inflated per-call latency |
+| GPT-5.4 mean tokens / run    | ~20K        | **3,678**    | 0.18× | Lazy fail → fast, cheap, often wrong |
+| Sonnet wall time (24-run)    | unknown     | **46:21**    | NEW   | Slow page loads + retries (not measured to be API-side) |
 | GPT-5.4 wall time (24-run)   | unknown     | **1:58**     | NEW   | Lazy = fast |
 
 ### Phase 1 risks

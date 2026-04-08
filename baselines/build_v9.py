@@ -62,12 +62,30 @@ _RUNS: list[RunInput] = [
         notes=(
             "Sonnet full v8 baseline (12 tasks × 2 epochs = 24 runs). "
             "Wall time 46:21. 5 samples hit max_turns=12 (tool_limit "
-            "failure mode) due to slow network + Wolfram Alpha / "
-            "Allrecipes / BBC News page state drift since v8 "
-            "measurement on 2026-04-07."
+            "failure mode). Trace review (post-mortem v2, after the "
+            "first-draft 'environmental drift' narrative was "
+            "corrected and again after Apple was mis-attributed as "
+            "SITE_RENDER) split them into 3 classes with a clear "
+            "dominant cause: SITE_RENDER x1 (Wolfram Alpha--0 — "
+            "agent finds '11.2' only inside SVG path coordinates and "
+            "concludes 'the result is rendered as an image'); "
+            "REF_STALE x1 (BBC News--5 — bp open on the reference "
+            "URL returns 'BBC - 500: Internal Server Error'); "
+            "CHROME_TAB_POLLUTION x3 (Huggingface--3 contains the "
+            "explicit agent observation 'tab mismatch', Allrecipes--0 "
+            "has 26 BBC mentions bleeding into the task, Apple--0 "
+            "ep 2 initially loaded the MacBook Air page with "
+            "$1099/$1299 prices but later tool output switches to "
+            "Allrecipes content). The Wolfram trace also shows "
+            "session-state contamination signals (final bp net lists "
+            "an allrecipes.com GET as the only request, mid-trace "
+            "Merriam-Webster navigation), so the CHROME_TAB_POLLUTION "
+            "story may be even stronger than 3/5. See "
+            "docs/lessons-learned.md M1.6 section for the full "
+            "attribution and the meta-lesson."
         ),
     ),
-    # Filled in post-run by _resolve_runs(); placeholder for GPT-5.4
+    # Filled in post-run by main(); placeholder for GPT-5.4
 ]
 
 
@@ -167,7 +185,9 @@ def _failed_samples(log_path: Path) -> list[dict[str, Any]]:
             tag = "UNKNOWN"
 
         total_tokens = sum(
-            u.input_tokens + u.output_tokens + (u.input_tokens_cache_read or 0)
+            u.input_tokens
+            + u.output_tokens
+            + (u.input_tokens_cache_read or 0)
             + (u.input_tokens_cache_write or 0)
             for u in (s.model_usage or {}).values()
         )
@@ -198,7 +218,7 @@ def _model_section(run: RunInput) -> dict[str, Any]:
 
     v8 = _V8_ANCHORS.get(run.model, {})
     sonnet_target_range = (22, 24)  # ±1 of 23
-    gpt54_target_range = (16, 18)   # ±1 of 17
+    gpt54_target_range = (16, 18)  # ±1 of 17
     target_range = (
         sonnet_target_range
         if run.model == "anthropic/claude-sonnet-4-6"
@@ -225,8 +245,23 @@ def _model_section(run: RunInput) -> dict[str, Any]:
     }
 
 
+# SHA of the caliper HEAD commit under which the v9 .eval logs were
+# actually recorded. This is PINNED, not read from git, so that
+# rebuilding v9.json from the same logs after subsequent commits
+# (e.g. narrative corrections) still records the measurement
+# commit for provenance. Do NOT change this unless the logs are
+# re-generated.
+_MEASUREMENT_COMMIT = "152e66893c59"
+
+
 def _caliper_commit() -> str:
-    """Short SHA of the current caliper HEAD commit."""
+    """Pinned SHA of the commit under which v9 logs were recorded."""
+    return _MEASUREMENT_COMMIT
+
+
+def _git_head_short() -> str:
+    """Short SHA of the current caliper HEAD — used for narrative
+    provenance, separate from the measurement commit above."""
     try:
         result = subprocess.run(
             ["git", "-C", str(_REPO), "rev-parse", "--short=12", "HEAD"],
@@ -248,6 +283,9 @@ def _inspect_ai_version() -> str:
         return "unknown"
 
 
+_MEASUREMENT_DATE = "2026-04-08"
+
+
 def build_v9(runs: list[RunInput]) -> dict[str, Any]:
     """Assemble the full v9.json structure."""
     return {
@@ -259,8 +297,14 @@ def build_v9(runs: list[RunInput]) -> dict[str, Any]:
             "curated tasks using caliper-browser-pilot's v8_baseline "
             "@task, M1.6 of the Phase 1 port."
         ),
-        "test_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        # test_date and caliper_commit are pinned to the measurement run.
+        # analysis_commit tracks the commit under which build_v9.py was
+        # LAST executed to produce this file (narrative/attribution
+        # updates). generated_at is the UTC timestamp of that run.
+        "test_date": _MEASUREMENT_DATE,
         "caliper_commit": _caliper_commit(),
+        "analysis_commit": _git_head_short(),
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "inspect_ai_version": _inspect_ai_version(),
         "task_spec": {
             "task_name": "v8_baseline",
@@ -277,29 +321,139 @@ def build_v9(runs: list[RunInput]) -> dict[str, Any]:
         },
         "models": {run.model: _model_section(run) for run in runs},
         "methodology_notes": {
-            "deviation_from_v8": (
-                "Sonnet 19/24 (vs v8 23/24 anchor): 5 samples hit "
-                "max_turns=12 with empty answer. Root cause is "
-                "environmental: slow network between M1.6 measurement "
-                "machine and Anthropic API increased per-turn latency, "
-                "and Wolfram Alpha + Allrecipes + BBC News page state "
-                "has drifted since v8 was measured 24 hours earlier. "
-                "Apple--3 (the v8 canary) passed both epochs in v9 — "
-                "its 'hits max_turns' failure mode was inherited by "
-                "other samples instead. This is exactly the kind of "
-                "environmental drift test-sets.md principles 2 (site "
-                "drift) and 9 (reproducibility) warn about. caliper's "
-                "implementation is correct; the baseline numbers "
-                "reflect reality on 2026-04-08, not a regression."
+            "post_mortem_status": (
+                "Third-pass analysis based on trace evidence. "
+                "Pass 1 (commit 1536416): wrote 'environmental "
+                "drift' after reading 1 Sonnet trace — wrong. "
+                "Pass 2: read all 5 Sonnet traces, produced a "
+                "2/1/2 SITE_RENDER/REF_STALE/CHROME_TAB_POLLUTION "
+                "split — still wrong about Apple. Pass 3 (this "
+                "file, after Codex review): verified Apple--0 ep 2 "
+                "first bp open returned prices (NOT empty shell), "
+                "reclassified to CHROME_TAB_POLLUTION. Final split "
+                "is 1/1/3 with CHROME_TAB_POLLUTION dominant. "
+                "Every round shrank the error bars by forcing one "
+                "more trace to be read. See docs/lessons-learned.md "
+                "M1.6 section for the full narrative and the "
+                "meta-lesson."
+            ),
+            "sonnet_failure_attribution": (
+                "5 TOOL_LIMIT failures, classified from trace "
+                "evidence (v2 of the post-mortem, after Codex review "
+                "caught an Apple mis-attribution in v1). SITE_RENDER "
+                "x1: Wolfram Alpha--0 — the numeric answer (11.2) "
+                "appears only inside SVG path coordinates; agent "
+                "explicitly writes 'the result is rendered as an "
+                "image' and cannot extract it through bp read or bp "
+                "eval text selectors. REF_STALE x1: BBC News--5 — "
+                "bp open on the reference URL returns 'BBC - 500: "
+                "Internal Server Error' as the literal page title; "
+                "agent correctly retries via Google search but "
+                "cannot recover the intended article. "
+                "CHROME_TAB_POLLUTION x3: Huggingface--3 contains "
+                "the explicit agent observation 'the browser is "
+                "clearly rendering Coursera content even though the "
+                "URL shows Hugging Face. It seems there's a tab "
+                "mismatch' and has 28 Coursera + 6 Allrecipes "
+                "mentions during what should be a Hugging Face "
+                "task; Allrecipes--0 has 26 BBC mentions bleeding "
+                "into the Allrecipes task; Apple--0 ep 2 — and "
+                "this is where the first-draft classification was "
+                "wrong — initially loaded the MacBook Air page with "
+                "$1099/$1299 prices present (NOT an empty React "
+                "shell as v1 claimed), then later tool output "
+                "switches to Allrecipes content, matching the same "
+                "session-pollution signature. The Wolfram trace "
+                "also shows session-pollution signals (final 'bp "
+                "net' lists only an allrecipes.com GET; mid-trace "
+                "click leads to Merriam-Webster and agent notes "
+                "'this appears to be the user's actual browser "
+                "state — a different tab or navigation occurred'), "
+                "so CHROME_TAB_POLLUTION may touch Wolfram too. "
+                "CHROME_TAB_POLLUTION is the dominant finding: bp's "
+                "Chrome session state leaks between samples because "
+                "bp attaches to the user's real Chrome — caliper's "
+                "text_protocol_agent cannot assume hermetic state "
+                "per sample."
+            ),
+            "sonnet_not_environmental_drift": (
+                "The original draft said 'slow network to Anthropic "
+                "API + site drift since 2026-04-07'. Neither half "
+                "is evidence-backed. Per-turn API latency was not "
+                "measured; 46:21 wall time is consistent with slow "
+                "page loads and long retry loops but does not "
+                "imply the API specifically was slow. 'Site drift' "
+                "generically covered what are actually 4+ distinct "
+                "classes of failure, 3 of which turn out to be "
+                "the same root cause (CHROME_TAB_POLLUTION). The "
+                "corrected attribution names the specific cause "
+                "per sample from the trace."
+            ),
+            "gpt54_behaviour_not_drift": (
+                "GPT-5.4 produced 24/24 lazy (message_count=3, "
+                "commands_run=0, mean 930 uncached input tokens per "
+                "run vs Sonnet's 96,840 on the same tasks). Uniform "
+                "pattern: task + initial snapshot -> single-turn "
+                "ANSWER from training data. Some correct (BBC "
+                "fossil fuels), some hallucinated (Allrecipes recipe "
+                "names), some simply wrong (GitHub storage delta: "
+                "agent says 30 GB, real answer is 48 GB). The first "
+                "draft labelled this 'gpt-5.4 model drift' — NOT "
+                "evidence-based. The correct label is 'single-turn "
+                "training-data answer', which is behavioural, not "
+                "causal. Actual cause (model-level drift vs Inspect "
+                "AI OpenAI Responses adapter context formatting vs "
+                "prompt/training interaction) is NOT established by "
+                "M1.6."
             ),
             "max_turns_verification": (
-                "The v8 canary check was originally designed to catch "
-                "silent max_turns relaxation. Apple--3 passing in v9 "
-                "is NOT a red flag: 5 OTHER samples (Allrecipes--0, "
-                "Apple--0, Wolfram Alpha--0, BBC News--5, "
-                "Huggingface--3) hit the exact max_turns=12 limit, "
-                "proving the limit is still enforced. Failure "
-                "attribution tag for all 5: TOOL_LIMIT."
+                "The v8 canary check was originally designed to "
+                "catch silent max_turns relaxation. Apple--3 passing "
+                "in v9 is NOT a red flag: 5 other samples hit the "
+                "exact max_turns=12 limit, proving the limit is "
+                "still enforced. Failure attribution tag for all 5: "
+                "TOOL_LIMIT."
+            ),
+            "what_holds": (
+                "Findings that survive the post-mortem (v2): (1) "
+                "lazy_detection surfaces gpt-5.4's silent capability "
+                "collapse (13/24 pass rate looks plausible; 24/24 "
+                "lazy shows it's 0 real passes — the M1.1 two-scorer "
+                "invariant firing on a second data point). (2) "
+                "Per-bucket failure attribution resolves 5 Sonnet "
+                "failures into 3 root-cause classes pointing at "
+                "different fixes. (3) Cache-hit-rate asymmetry "
+                "between Anthropic (0.0%, default caching off) and "
+                "OpenAI (73.9%, automatic prefix cache) is visible "
+                "in caliper's UsageSummary and was invisible in v8. "
+                "(4) The dominant root cause is CHROME_TAB_POLLUTION "
+                "(3/5 Sonnet failures, and plausibly 4/5 if the "
+                "Wolfram session-pollution signals are included): "
+                "bp attaches to the user's real Chrome and its "
+                "session state leaks between samples. This is a "
+                "concrete, reproducible, high-impact bug with a "
+                "specific fix (reset bp tabs / start fresh Chrome "
+                "profile per sample)."
+            ),
+            "what_does_not_hold": (
+                "Claims removed from the narrative across two "
+                "post-mortem rounds: (v1 corrections) 'environmental "
+                "drift' as a unified root cause (actually 3+ "
+                "distinct classes); 'slow network to Anthropic' as "
+                "the driver of TOOL_LIMIT (not measured); 'gpt-5.4 "
+                "model drift' (not measured); 'most important "
+                "methodological finding of Phase 1' (rhetorical "
+                "inflation); 'most honest agent-eval baseline' "
+                "(baselines are made honest by the analysis, not by "
+                "the aggregation). (v2 corrections after Codex "
+                "review) 'Apple--0 ep 2 SITE_RENDER / empty React "
+                "shell' (trace shows the first bp open already "
+                "returned $1099/$1299 prices — the failure mode is "
+                "CHROME_TAB_POLLUTION, not empty rendering); "
+                "'SITE_RENDER x2' as the size of that bucket (it's "
+                "x1, only Wolfram). Each round of correction "
+                "shrank the error bars by forcing me to read "
+                "another trace."
             ),
             "cost_framing": (
                 "All token totals are in the raw ModelUsage sense "
@@ -308,20 +462,21 @@ def build_v9(runs: list[RunInput]) -> dict[str, Any]:
                 "see methodology.md principle 5 implementation note "
                 "for the rationale."
             ),
-            "cache_hit_rate": (
-                "All buckets show cache_hit_rate = 0.0. This is "
-                "because Inspect AI's default does not enable "
-                "Anthropic prompt caching and the text-protocol "
-                "solver doesn't add cache_control to messages. A "
-                "future milestone (tagged with SKILL.md caching) "
-                "will wire up prompt caching and produce numbers "
-                "where the cache_hit_rate column is meaningful."
+            "cache_hit_rate_anthropic": (
+                "Sonnet buckets show cache_hit_rate = 0.0 because "
+                "Inspect AI's default does not enable Anthropic "
+                "prompt caching and the text-protocol solver doesn't "
+                "add cache_control to messages. gpt-5.4's 73.9% is "
+                "OpenAI's automatic prefix cache kicking in for "
+                "prefixes >= 1024 tokens. A future milestone tagged "
+                "with SKILL.md caching will wire up Anthropic prompt "
+                "caching; until then the asymmetry is a property of "
+                "the defaults, not a regression."
             ),
         },
         "reproduce_check": {
             "all_models_pass_in_range": all(
-                _model_section(run)["v8_comparison"]["pass_in_range"]
-                for run in runs
+                _model_section(run)["v8_comparison"]["pass_in_range"] for run in runs
             ),
             "apple_minus_3_epoch_2_failed": False,
             "max_turns_limit_still_enforced": True,
@@ -351,8 +506,16 @@ def main() -> int:
             log_filename=gpt_log_filename,
             notes=(
                 "GPT-5.4 full v8 baseline, same environment as the "
-                "Sonnet run above. Lazy behaviour is expected based "
-                "on v8 observations."
+                "Sonnet run above. Observed behaviour: 24/24 lazy, "
+                "uniform 'single-turn training-data answer' pattern "
+                "(message_count=3, commands_run=0, mean 930 uncached "
+                "input tokens vs Sonnet's 96,840 on the same tasks). "
+                "This is a BEHAVIOURAL description, not a causal "
+                "claim — M1.6 does not establish whether the cause "
+                "is model drift, OpenAI Responses adapter context "
+                "changes, or prompt/training-data interaction. See "
+                "docs/lessons-learned.md M1.6 section for the "
+                "corrected attribution."
             ),
         ),
     ]
