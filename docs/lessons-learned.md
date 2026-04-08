@@ -793,5 +793,180 @@ survives one read can still be wrong; what matters is whether
 the read is thorough and whether you were ready to admit
 surprise.
 
-That is the M1.6 lesson I'm actually confident in, because I
-had to live through failing it in two different ways.
+That's what I thought was the M1.6 lesson after the second
+round of corrections. Then I did M1.6b, and the lesson got an
+ending I didn't expect. See the next section.
+
+## M1.6b: the fix that tested the diagnosis (and corrected it again)
+
+After committing the "1/1/3 split" post-mortem, I proposed
+M1.6b: fix bp's session pollution, re-run the 5 failed
+Sonnet samples from v9, and see if the predicted pattern
+(Huggingface/Allrecipes/Apple pass, Wolfram/BBC still fail)
+held. The fix was small — a `session_prologue` parameter on
+`text_protocol_agent` and a default of `[["bp", "disconnect"],
+["bp", "connect"]]` in `bp_agent()`. Seven regression tests.
+Roughly 30 lines of production code.
+
+The 30-minute re-run produced **8/10 passes**. Compared to the
+v9 baseline on the same 5 samples (0/10), that's an 80
+percentage-point lift. Good enough to validate the
+CHROME_TAB_POLLUTION story.
+
+And then the per-sample breakdown broke my classification
+again.
+
+### Results
+
+| Sample | v9 post-mortem v2 label | M1.6b outcome | Verdict on the label |
+|---|---|---|---|
+| Wolfram Alpha--0 | **SITE_RENDER** | ✓ × 2 (2 & 10 cmds) | **wrong** — actually CHROME_TAB_POLLUTION |
+| BBC News--5 | **REF_STALE** | ✓ × 2 (10 & 2 cmds) | **wrong** — actually CHROME_TAB_POLLUTION (or a real BBC 500 outage that coincidentally resolved, which I can't rule out but is less likely than the parallel with Wolfram suggests) |
+| Huggingface--3 | CHROME_TAB_POLLUTION | ✓ × 2 (2 & 8 cmds) | confirmed |
+| Allrecipes--0 | CHROME_TAB_POLLUTION | ✓ × 2 (ep 1 lazy) | confirmed |
+| Apple--0 | CHROME_TAB_POLLUTION | **✗ × 2** (73, 169 cmds, max_turns) | **wrong** — NOT tab pollution |
+
+So the "1/1/3 split" I'd committed in the post-mortem v2 was
+also wrong — this time about Wolfram (SITE_RENDER) and BBC
+(REF_STALE). Both turned out to be part of the same
+CHROME_TAB_POLLUTION class, bringing the count from 3 to 4.
+
+**But I was also wrong about Apple in the other direction.**
+With a clean bp session, Apple--0 still fails. The new trace
+shows something very different from the v9 one: the agent
+navigates to the MacBook Air page cleanly, and at message 7
+(turn 3) its `bp read --limit 8000` returns literally:
+
+```
+13-inch
+From $1099 or $91.58 per month for 12 months
+
+15-inch
+From $1299 or $108.25 per month for 12 months
+```
+
+That's the answer to "compare the prices of the latest
+MacBook Air models". But instead of writing `ANSWER:`, the
+agent keeps going — clicking non-existent configurator
+selectors (`.rf-bic-dimension-selector`), running JS regexes
+against `document.body.innerHTML`, dumping data-autom
+attributes — for 73 commands (epoch 1) or 169 commands
+(epoch 2) before running out of turns.
+
+This is a new failure class: **`AGENT_BEHAVIOR`** /
+over-exploration. The agent has the answer and refuses to
+commit because the answer doesn't "feel complete". It's
+neither a bp bug nor a site bug — it's a termination /
+prompt / strategy bug. The fix surface is somewhere in
+SKILL.md or the system prompt, not in the solver or in bp.
+It's the direct analog of the v0–v8 "lazy detection"
+discovery in reverse: lazy detection caught agents that
+answered *without* looking; this catches an agent that keeps
+looking *after* it has the answer.
+
+### Side finding: 1 Sonnet lazy
+
+Allrecipes--0 epoch 1 scored `lazy=True` with
+`commands_run=0` and `message_count=3` — Sonnet produced a
+single-turn training-data answer that happened to be correct.
+v9's full Sonnet baseline showed 0 lazy across 24 runs. 1/10
+on M1.6b could be noise or a low-rate real behavior. Single
+data point, not generalizing. Worth a note in case it shows
+up again.
+
+### The v3 correction to the "what doesn't hold" list
+
+Adding to the lists above:
+
+**From the third draft (after M1.6b validation re-run):**
+
+8. ❌ **"Wolfram Alpha--0 SITE_RENDER."** With a clean bp
+   session the agent answers in 2–10 commands. The
+   SVG-path-coordinate wall the v9 agent tripped over was a
+   symptom of polluted DOM state, not a property of Wolfram
+   Alpha's rendering.
+9. ❌ **"BBC News--5 REF_STALE."** Clean bp session reaches
+   the article and answers correctly. The HTTP 500 in the
+   v9 trace was either session pollution presenting as a
+   fake server error, or a genuine BBC outage that
+   coincidentally resolved — M1.6b doesn't distinguish. The
+   parallel with Wolfram's same-day reversal makes pollution
+   the stronger hypothesis.
+10. ❌ **"Apple--0 CHROME_TAB_POLLUTION."** The v9 trace
+    showed Allrecipes content appearing mid-trace, which I
+    read as decisive evidence of tab pollution. With a clean
+    bp session, Allrecipes content doesn't appear, and the
+    page renders correctly — and Apple--0 **still fails**,
+    because the agent over-explores when it should commit.
+    This is a new AGENT_BEHAVIOR class, tracked separately
+    on the roadmap.
+11. ❌ **"1/1/3 split" as the final classification.** The
+    validated split is 4/1 CTP/AGENT_BEHAVIOR.
+
+### The running meta-lesson, updated
+
+Before M1.6b, I thought the lesson was:
+*"Read the traces before writing the narrative."*
+
+After M1.6b, the lesson is:
+*"Reading the traces isn't enough — you have to actually
+apply the fix and re-run to close the loop on a diagnosis.
+Classification from trace reading is hypothesis; pass/fail
+after the fix is data."*
+
+Trace reading gave me the CHROME_TAB_POLLUTION hypothesis,
+which was correct for 4 of 5 samples. But trace reading also
+gave me SITE_RENDER for Wolfram, REF_STALE for BBC, and (in
+the second round) CHROME_TAB_POLLUTION for Apple — all three
+wrong. In each case, I was reading surface symptoms (SVG in
+the DOM, "500" in the page title, "Allrecipes" in mid-trace
+tool output) and inferring root causes that the evidence
+couldn't actually support.
+
+The only thing that could distinguish "symptom" from "cause"
+was running the fix. Huggingface / Allrecipes / Wolfram / BBC
+all passed with clean sessions — so whatever their
+individual surface symptoms looked like in the v9 trace, the
+cause was bp pollution. Apple failed with a clean session —
+so whatever tab-pollution signals were in its v9 trace were
+coincidence, not cause.
+
+This is the same discipline caliper enforces on agent
+evaluations: two scorers, variance across epochs, explicit
+failure attribution. **Caliper's own post-mortems need
+two-pass evidence: static trace + live re-run.** Static
+alone is not enough, no matter how carefully you read.
+
+### What now lands as Phase 1's cleanest methodology win
+
+Stripping out all the wrong claims, the findings that
+survive four rounds of correction are:
+
+1. **The M1.6b bp session prologue fix works.** It turns
+   0/10 into 8/10 on the 5 v9 failed samples. If the lift
+   generalizes linearly to the full 24-run baseline (which
+   it probably does — the 4 samples this explains are
+   independent), Sonnet would go from 19/24 to ~23/24,
+   effectively matching the v8 anchor. The "caliper can't
+   reproduce v8" concern from the first post-mortem draft
+   is resolved once bp hygiene is fixed.
+
+2. **Apple--0 is a real, separable AGENT_BEHAVIOR bug.**
+   Not fixed in M1.6b. Roadmap item for its own follow-up.
+
+3. **caliper's measurement layer did its job at every
+   step.** The two scorers (judge + lazy) caught that 1
+   Allrecipes--0 pass in M1.6b was lazy. The per-sample
+   failure attribution let the post-mortem move forward
+   sample-by-sample even when each round of classification
+   turned out wrong. The baseline JSON format with per-round
+   records (v9 → post-mortem v1 → v2 → m1_6b_validation) is
+   what let me admit each wrong call without losing the
+   history.
+
+4. **Three rounds of static-evidence correction + one round
+   of live-fix validation** is what it took to get a
+   5-sample failure distribution right. That's uncomfortable
+   and it's the honest record. Phase 2's self-eval
+   milestones need to bake this in: *assume your post-mortem
+   is wrong until you've run the fix*.

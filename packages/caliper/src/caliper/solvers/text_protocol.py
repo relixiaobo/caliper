@@ -64,6 +64,7 @@ def text_protocol_agent(
     system_prompt: str | None = None,
     cli_timeout: float = 60.0,
     output_formatter: Callable[[str], str] | None = None,
+    session_prologue: list[list[str]] | None = None,
 ) -> Solver:
     """Build a text-protocol agent loop solver.
 
@@ -85,9 +86,20 @@ def text_protocol_agent(
             before it's added to the conversation. Defaults to a
             3000-char cap. Adapters pass tool-specific formatters here
             (e.g. JSON snapshot compactors).
+        session_prologue: Optional list of argvs to run at the start
+            of every sample, before the ``start_url`` open. Each
+            element is a full argv list passed to ``run_cli``. Used
+            by adapters whose CLI tool has persistent cross-sample
+            state that needs resetting (e.g. ``bp_agent`` passes
+            ``[["bp", "disconnect"], ["bp", "connect"]]`` to avoid
+            the M1.6 CHROME_TAB_POLLUTION failure class). Output from
+            prologue commands is discarded; only errors surface.
     """
     obs_set = frozenset(observation_commands)
     fmt = output_formatter or _default_output_formatter
+    prologue: list[list[str]] = (
+        [list(argv) for argv in session_prologue] if session_prologue else []
+    )
 
     if system_prompt is None and system_prompt_file is not None:
         system_prompt = Path(system_prompt_file).read_text()
@@ -105,6 +117,15 @@ def text_protocol_agent(
         ss.observed_page = False
         ss.commands_run = 0
 
+        # Session prologue: reset the CLI tool's cross-sample state
+        # BEFORE taking the initial snapshot. Must run before
+        # ``start_url`` open so the opening observation reflects a
+        # clean session. Output is intentionally discarded — the
+        # prologue's job is to reset state, not to inform the agent.
+        # See M1.6b for the failure class this guards against.
+        for argv in prologue:
+            await run_cli(list(argv), timeout=cli_timeout)
+
         # Auto-open start_url so the agent always sees an initial page.
         # No shell quoting needed — run_cli takes an argv list and
         # hands it straight to execve(2), so the URL is a literal
@@ -112,9 +133,7 @@ def text_protocol_agent(
         start_url = (state.metadata or {}).get("start_url")
         opening_observation = ""
         if start_url:
-            raw = await run_cli(
-                [cli_name, "open", start_url], timeout=cli_timeout
-            )
+            raw = await run_cli([cli_name, "open", start_url], timeout=cli_timeout)
             opening_observation = fmt(raw)
 
         # Reset the conversation: caliper's text-protocol loop owns it.

@@ -124,6 +124,240 @@ _V8_ANCHORS: dict[str, Any] = {
 
 
 # ---------------------------------------------------------------------------
+# M1.6b validation round: re-running the 5 failed v9 Sonnet samples with
+# the new bp session prologue fix to test the post-mortem diagnosis.
+# ---------------------------------------------------------------------------
+
+
+_M1_6B_VALIDATION: dict[str, Any] = {
+    "description": (
+        "Validation re-run of the 5 v9 Sonnet TOOL_LIMIT failures "
+        "with the M1.6b bp session prologue fix applied. The fix "
+        "defaults text_protocol_agent's session_prologue to "
+        "['bp disconnect', 'bp connect'] before each sample, which "
+        "clears bp's ~/.browser-pilot/state.json and creates a fresh "
+        "pilot tab. Purpose: test the CHROME_TAB_POLLUTION diagnosis "
+        "from the v9 post-mortem v2 (see methodology_notes above) "
+        "against real trace evidence."
+    ),
+    "log_filename": (
+        "2026-04-08T13-35-07-00-00_v8-baseline_RpcBAmsX8pYqmNt3VuZow7.eval"
+    ),
+    "run_date": "2026-04-08",
+    "runtime_minutes": 30,
+    "caliper_commit_at_run": "c32ad10 + WIP M1.6b fix (uncommitted at run time)",
+    "spec": {
+        "sample_ids": [
+            "Wolfram Alpha--0",
+            "BBC News--5",
+            "Huggingface--3",
+            "Allrecipes--0",
+            "Apple--0",
+        ],
+        "epochs": 2,
+        "total_runs": 10,
+        "max_turns": 12,
+        "model": "anthropic/claude-sonnet-4-6",
+    },
+    "headline": {
+        "pass_count": 8,
+        "pass_rate": 0.80,
+        "lazy_count": 1,
+        "total_tokens": 792947,
+        "total_uncached_input_tokens": 709427,
+        "v9_subset_pass_count": 0,
+        "v9_subset_pass_rate": 0.00,
+        "lift_pct_points": 80,
+    },
+    "per_sample": {
+        "Wolfram Alpha--0": {
+            "epoch_1": {
+                "judge": True,
+                "lazy": False,
+                "commands_run": 2,
+                "msgs": 5,
+                "tokens": 8282,
+            },
+            "epoch_2": {
+                "judge": True,
+                "lazy": False,
+                "commands_run": 10,
+                "msgs": 9,
+                "tokens": 26729,
+            },
+            "v9_classification_post_mortem_v2": "SITE_RENDER",
+            "m1_6b_outcome": "PASS x2",
+            "revised_diagnosis": (
+                "The v9 post-mortem v2 labelled this SITE_RENDER because "
+                "the v9 trace showed the agent finding '11.2' only in SVG "
+                "path coordinates and writing 'the result is rendered as "
+                "an image'. In M1.6b with a clean bp session, the agent "
+                "answered in 2 commands (epoch 1) and 10 commands (epoch "
+                "2) without hitting any SVG wall. The SITE_RENDER label "
+                "was wrong — the real cause was also CHROME_TAB_POLLUTION. "
+                "The SVG path coordinates the v9 agent tripped over were "
+                "a symptom of the polluted DOM/navigation state, not a "
+                "stable property of Wolfram Alpha's rendering."
+            ),
+        },
+        "BBC News--5": {
+            "epoch_1": {
+                "judge": True,
+                "lazy": False,
+                "commands_run": 10,
+                "msgs": 5,
+                "tokens": 14314,
+            },
+            "epoch_2": {
+                "judge": True,
+                "lazy": False,
+                "commands_run": 2,
+                "msgs": 5,
+                "tokens": 8953,
+            },
+            "v9_classification_post_mortem_v2": "REF_STALE",
+            "m1_6b_outcome": "PASS x2",
+            "revised_diagnosis": (
+                "The v9 post-mortem v2 labelled this REF_STALE because "
+                "the v9 trace showed the first bp open returning 'BBC - "
+                "500: Internal Server Error' as the literal page title. "
+                "In M1.6b with a clean bp session, BOTH epochs reached "
+                "the article and answered correctly. The REF_STALE label "
+                "was wrong — actual cause was CHROME_TAB_POLLUTION (or a "
+                "genuine transient BBC outage that coincidentally "
+                "resolved, which cannot be fully ruled out without more "
+                "data points). The prior-pattern match with Wolfram's "
+                "same-day reversal makes 'session pollution presenting "
+                "as a fake 500' far more likely than 'BBC had a real 12-"
+                "hour outage that happened to span the v9 run'."
+            ),
+        },
+        "Huggingface--3": {
+            "epoch_1": {
+                "judge": True,
+                "lazy": False,
+                "commands_run": 2,
+                "msgs": 5,
+                "tokens": 13362,
+            },
+            "epoch_2": {
+                "judge": True,
+                "lazy": False,
+                "commands_run": 8,
+                "msgs": 5,
+                "tokens": 12368,
+            },
+            "v9_classification_post_mortem_v2": "CHROME_TAB_POLLUTION",
+            "m1_6b_outcome": "PASS x2",
+            "revised_diagnosis": (
+                "Classification confirmed. The v9 trace's explicit 'tab "
+                "mismatch' log was the strongest evidence for this class, "
+                "and the M1.6b clean-session run passes in 2-8 commands."
+            ),
+        },
+        "Allrecipes--0": {
+            "epoch_1": {
+                "judge": True,
+                "lazy": True,
+                "commands_run": 0,
+                "msgs": 3,
+                "tokens": 8846,
+            },
+            "epoch_2": {
+                "judge": True,
+                "lazy": False,
+                "commands_run": 19,
+                "msgs": 13,
+                "tokens": 136397,
+            },
+            "v9_classification_post_mortem_v2": "CHROME_TAB_POLLUTION",
+            "m1_6b_outcome": "PASS x2 (1 lazy)",
+            "revised_diagnosis": (
+                "CHROME_TAB_POLLUTION classification confirmed for both "
+                "epochs. SIDE FINDING: epoch 1 scored lazy=True "
+                "(commands_run=0, message_count=3) — Sonnet produced a "
+                "single-turn training-data answer that happened to be "
+                "correct. v9's full Sonnet baseline showed 0 lazy across "
+                "24 runs. 1/10 lazy here could be noise or a real "
+                "low-rate Sonnet behaviour; a single data point is not "
+                "enough to generalise."
+            ),
+        },
+        "Apple--0": {
+            "epoch_1": {
+                "judge": False,
+                "lazy": False,
+                "commands_run": 73,
+                "msgs": 26,
+                "tokens": 311826,
+            },
+            "epoch_2": {
+                "judge": False,
+                "lazy": False,
+                "commands_run": 169,
+                "msgs": 26,
+                "tokens": 251870,
+            },
+            "v9_classification_post_mortem_v2": "CHROME_TAB_POLLUTION",
+            "m1_6b_outcome": "FAIL x2 (max_turns=12, both epochs)",
+            "revised_diagnosis": (
+                "CLASSIFICATION DISPROVEN. With a clean bp session, the "
+                "agent's first 'bp read --limit 8000' at message 7 "
+                "returns the full MacBook Air pricing: '13-inch From "
+                "$1099 or $91.58 per month', '15-inch From $1299 or "
+                "$108.25 per month'. That IS the answer to 'compare the "
+                "prices of the latest MacBook Air models'. But instead "
+                "of writing ANSWER, the agent keeps going — clicking "
+                "non-existent configurator selectors, running JS regexes "
+                "against document.body.innerHTML — for 73 / 169 commands "
+                "before running out of turns. This is a NEW failure "
+                "class: AGENT_BEHAVIOR (over-exploration / refusal to "
+                "commit to a plausible partial answer). Not a bp problem, "
+                "not a site problem — an agent-prompt / termination-"
+                "criteria problem. Needs its own follow-up; tracked as "
+                "a roadmap item, not fixed in M1.6b."
+            ),
+        },
+    },
+    "diagnosis_verdict": {
+        "CHROME_TAB_POLLUTION_validated_for": [
+            "Wolfram Alpha--0",
+            "BBC News--5",
+            "Huggingface--3",
+            "Allrecipes--0",
+        ],
+        "CHROME_TAB_POLLUTION_disproven_for": ["Apple--0"],
+        "v9_failures_attributable_to_ctp": "4 of 5",
+        "ctp_net_lift_projected_on_full_baseline": (
+            "19/24 -> approximately 23/24 if the subset lift "
+            "generalises, matching the v8 anchor. This is a projection, "
+            "not a measured full re-run."
+        ),
+        "new_failure_class_found": (
+            "Apple--0: AGENT_BEHAVIOR / over-exploration — agent has "
+            "sufficient answer data at turn 3 but refuses to commit, "
+            "burns 73-169 commands searching for more detail before "
+            "hitting max_turns. Needs separate fix (prompt / "
+            "termination logic)."
+        ),
+    },
+    "what_this_means_for_the_post_mortem": (
+        "Post-mortem v2 (which this v9.json recorded before M1.6b ran) "
+        "was STILL wrong on 2 of 5 samples. The 1/1/3 split of "
+        "SITE_RENDER/REF_STALE/CHROME_TAB_POLLUTION is superseded by the "
+        "M1.6b verdict: 4/1 CHROME_TAB_POLLUTION / AGENT_BEHAVIOR. This "
+        "is the THIRD round of corrections to the M1.6 post-mortem. The "
+        "earlier rounds are preserved in methodology_notes above and in "
+        "docs/lessons-learned.md's 'what does not hold' lists. The "
+        "running meta-lesson: even trace-backed post-mortems can be "
+        "wrong, and the only way to close the loop on a diagnosis is to "
+        "actually apply the fix and re-run. Classification from static "
+        "trace reading is hypothesis; pass/fail after the fix is data."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
 # Builders
 # ---------------------------------------------------------------------------
 
@@ -320,22 +554,33 @@ def build_v9(runs: list[RunInput]) -> dict[str, Any]:
             "lazy_scorer": "lazy_detection",
         },
         "models": {run.model: _model_section(run) for run in runs},
+        "m1_6b_validation": _M1_6B_VALIDATION,
         "methodology_notes": {
             "post_mortem_status": (
-                "Third-pass analysis based on trace evidence. "
-                "Pass 1 (commit 1536416): wrote 'environmental "
-                "drift' after reading 1 Sonnet trace — wrong. "
-                "Pass 2: read all 5 Sonnet traces, produced a "
+                "FOURTH-pass analysis. The first three passes were "
+                "static trace reads; the fourth is a live fix + "
+                "re-run. History: Pass 1 (commit 1536416) wrote "
+                "'environmental drift' from 1 Sonnet trace — wrong. "
+                "Pass 2 read all 5 Sonnet traces and produced a "
                 "2/1/2 SITE_RENDER/REF_STALE/CHROME_TAB_POLLUTION "
-                "split — still wrong about Apple. Pass 3 (this "
-                "file, after Codex review): verified Apple--0 ep 2 "
-                "first bp open returned prices (NOT empty shell), "
-                "reclassified to CHROME_TAB_POLLUTION. Final split "
-                "is 1/1/3 with CHROME_TAB_POLLUTION dominant. "
-                "Every round shrank the error bars by forcing one "
-                "more trace to be read. See docs/lessons-learned.md "
-                "M1.6 section for the full narrative and the "
-                "meta-lesson."
+                "split — wrong about Apple. Pass 3 (commit c32ad10, "
+                "post-Codex) verified Apple--0 ep 2's first bp open "
+                "returned prices (not an empty shell), reclassified "
+                "to CHROME_TAB_POLLUTION, ended with a 1/1/3 split. "
+                "Pass 4 (M1.6b validation — see m1_6b_validation "
+                "field below) applied the bp session prologue fix "
+                "and re-ran the 5 failed samples: 4 of 5 pass, "
+                "Apple still fails. Wolfram and BBC — both labelled "
+                "as their own classes in pass 3 — turn out to ALSO "
+                "have been CHROME_TAB_POLLUTION. Apple turns out to "
+                "be a new failure class (AGENT_BEHAVIOR: agent has "
+                "pricing data at msg 7 but keeps searching for more "
+                "detail, runs out of turns). The final validated "
+                "split is 4/1 CTP/AGENT_BEHAVIOR, superseding the "
+                "1/1/3 split above — which is preserved as a "
+                "record of what trace reading alone could tell us. "
+                "Running meta-lesson: trace classification is "
+                "hypothesis; fix + re-run is data."
             ),
             "sonnet_failure_attribution": (
                 "5 TOOL_LIMIT failures, classified from trace "
@@ -436,24 +681,37 @@ def build_v9(runs: list[RunInput]) -> dict[str, Any]:
                 "profile per sample)."
             ),
             "what_does_not_hold": (
-                "Claims removed from the narrative across two "
-                "post-mortem rounds: (v1 corrections) 'environmental "
-                "drift' as a unified root cause (actually 3+ "
-                "distinct classes); 'slow network to Anthropic' as "
-                "the driver of TOOL_LIMIT (not measured); 'gpt-5.4 "
-                "model drift' (not measured); 'most important "
-                "methodological finding of Phase 1' (rhetorical "
-                "inflation); 'most honest agent-eval baseline' "
-                "(baselines are made honest by the analysis, not by "
-                "the aggregation). (v2 corrections after Codex "
-                "review) 'Apple--0 ep 2 SITE_RENDER / empty React "
-                "shell' (trace shows the first bp open already "
-                "returned $1099/$1299 prices — the failure mode is "
-                "CHROME_TAB_POLLUTION, not empty rendering); "
-                "'SITE_RENDER x2' as the size of that bucket (it's "
-                "x1, only Wolfram). Each round of correction "
-                "shrank the error bars by forcing me to read "
-                "another trace."
+                "Claims removed across three post-mortem rounds. "
+                "(v1 corrections, post trace-read) 'environmental "
+                "drift' as a unified root cause; 'slow network to "
+                "Anthropic' as the driver of TOOL_LIMIT; 'gpt-5.4 "
+                "model drift'; 'most important methodological "
+                "finding of Phase 1'; 'most honest agent-eval "
+                "baseline'. (v2 corrections, post Codex review) "
+                "'Apple--0 ep 2 SITE_RENDER / empty React shell' "
+                "(trace showed first bp open returned prices); "
+                "'SITE_RENDER x2' (only x1, Wolfram). (v3 "
+                "corrections, post M1.6b validation re-run — see "
+                "m1_6b_validation field) 'Wolfram Alpha--0 "
+                "SITE_RENDER' (with clean bp session the agent "
+                "answers in 2-10 commands; the SVG-path-coordinate "
+                "wall was a symptom of polluted DOM state, not a "
+                "property of Wolfram); 'BBC News--5 REF_STALE' "
+                "(clean bp session reaches the article correctly; "
+                "the HTTP 500 was either session-pollution or a "
+                "real coincident outage — data doesn't distinguish, "
+                "but Wolfram's parallel reversal makes pollution "
+                "the stronger hypothesis); 'Apple--0 "
+                "CHROME_TAB_POLLUTION' (with clean bp session Apple "
+                "STILL fails both epochs at max_turns=12, with the "
+                "agent having the pricing answer at msg 7 but "
+                "refusing to commit — this is a NEW AGENT_BEHAVIOR "
+                "failure class); '1/1/3 split' as the final "
+                "attribution (the validated split is 4/1 "
+                "CTP/AGENT_BEHAVIOR). Each correction round — "
+                "trace-read v1, trace-read v2, live-run v3 — "
+                "tightened the picture by forcing one more source "
+                "of evidence to be consulted."
             ),
             "cost_framing": (
                 "All token totals are in the raw ModelUsage sense "
@@ -483,6 +741,16 @@ def build_v9(runs: list[RunInput]) -> dict[str, Any]:
             "failure_mode_distribution": (
                 "5 TOOL_LIMIT failures on Sonnet run, distributed "
                 "across different samples than v8 (not Apple--3)"
+            ),
+            "m1_6b_validation_outcome": (
+                "M1.6b subset re-run (5 failed samples x 2 epochs) "
+                "with bp session prologue fix: 8/10 pass. "
+                "CHROME_TAB_POLLUTION validated for 4 of 5 v9 "
+                "failures. Apple--0 still fails with clean bp "
+                "state — new AGENT_BEHAVIOR failure class. "
+                "Projected full-baseline Sonnet pass rate with "
+                "fix: ~23/24, effectively matching v8 anchor. See "
+                "m1_6b_validation field for per-sample details."
             ),
         },
     }

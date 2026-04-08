@@ -385,12 +385,113 @@ columns we couldn't produce before.
   that the real world doesn't provide. The first-pass
   post-mortem overcorrected in the other direction, labelling
   everything "environmental drift" from a handful of traces.
-  **The actual Phase 1 lesson from M1.6 is methodological: a
-  post-mortem written from the shape of the numbers instead of
-  from trace evidence is itself an uninstrumented agent step,
-  and caliper's own discipline has to apply to its own
-  narratives.** See
-  [lessons-learned.md](lessons-learned.md#m16-the-post-mortem-that-needed-its-own-post-mortem).
+  The second-pass trace-backed correction settled on a 1/1/3
+  SITE_RENDER / REF_STALE / CHROME_TAB_POLLUTION split — which
+  itself turned out wrong on 2 of 5 samples when M1.6b
+  validated the diagnosis by applying the fix.
+  **The actual Phase 1 lesson from M1.6 + M1.6b is
+  methodological: trace reading gives you a hypothesis;
+  running the fix gives you data. Neither alone is enough.**
+  See
+  [lessons-learned.md](lessons-learned.md#m16-the-post-mortem-that-needed-its-own-post-mortem)
+  and the M1.6b entry below for the full correction chain.
+
+- [x] **M1.6b** bp session hygiene fix + diagnosis validation (2026-04-08)
+
+  Fix the dominant M1.6 failure class (CHROME_TAB_POLLUTION)
+  and use the re-run as a live test of the post-mortem
+  diagnosis. This milestone is a direct consequence of M1.6:
+  the post-mortem identified a specific bp bug, and caliper's
+  own methodology demands that diagnosis claims be tested
+  before shipping.
+
+  Delivered:
+  - `packages/caliper/src/caliper/solvers/text_protocol.py`
+    — added `session_prologue: list[list[str]] | None`
+    parameter. Each argv in the list runs via ``run_cli``
+    at the start of every sample, *before* the ``start_url``
+    open. The list is copied at solver build time so caller
+    mutations don't leak in.
+  - `packages/caliper-browser-pilot/src/caliper_browser_pilot/solver.py`
+    — ``bp_agent()`` now defaults to a prologue of
+    ``[["bp", "disconnect"], ["bp", "connect"]]``, exported
+    as ``BP_DEFAULT_SESSION_PROLOGUE``. The disconnect kills
+    bp's daemon and clears ``~/.browser-pilot/state.json``;
+    the subsequent connect starts a fresh daemon with a new
+    pilot tab. Opt-out via ``session_prologue=[]`` for
+    single-sample smoke tests where hermetic state isn't
+    required.
+  - 7 new regression tests (5 in `caliper` core + 2 in
+    `caliper-browser-pilot`): prologue runs before
+    ``start_url``, runs on every sample not just the first,
+    empty prologue equals no prologue, default prologue is
+    ``disconnect``+``connect`` in order, list is copied not
+    aliased. Total tests: 185 → **192**.
+
+  Validation run: re-ran the 5 failed v9 Sonnet samples
+  (Wolfram Alpha--0, BBC News--5, Huggingface--3,
+  Allrecipes--0, Apple--0) × 2 epochs = 10 runs. 30:00 wall
+  time. Log file:
+  `2026-04-08T13-35-07-00-00_v8-baseline_RpcBAmsX8pYqmNt3VuZow7.eval`.
+  Per-sample results recorded in
+  [`baselines/v9.json`](../baselines/v9.json)'s
+  `m1_6b_validation` field.
+
+  | Sample | v9 post-mortem v2 | M1.6b outcome | Verdict |
+  |---|---|---|---|
+  | Wolfram Alpha--0 | SITE_RENDER | ✓ × 2 (2 & 10 cmds) | v2 wrong; actually CHROME_TAB_POLLUTION |
+  | BBC News--5 | REF_STALE | ✓ × 2 (10 & 2 cmds) | v2 wrong; actually CHROME_TAB_POLLUTION |
+  | Huggingface--3 | CHROME_TAB_POLLUTION | ✓ × 2 (2 & 8 cmds) | confirmed |
+  | Allrecipes--0 | CHROME_TAB_POLLUTION | ✓ × 2 (1 lazy on ep 1) | confirmed |
+  | Apple--0 | CHROME_TAB_POLLUTION | **✗ × 2** (max_turns) | v2 wrong; actually AGENT_BEHAVIOR |
+
+  **Headline**: 8/10 pass (80%) vs v9's 0/10 on the same
+  subset — an 80 percentage-point lift from a ~30-line fix.
+  4 of 5 v9 failures are attributable to CHROME_TAB_POLLUTION
+  (up from the v2 attribution of 3). If the subset lift
+  generalizes linearly to the full 24-run baseline, Sonnet
+  would move from 19/24 to ~23/24, effectively matching the
+  v8 anchor. A full re-run is **not** included in M1.6b
+  (time/cost budget); the projection is stated explicitly as
+  a projection, not as a measured result.
+
+  **New failure class discovered**: Apple--0 still fails
+  both epochs with clean bp state. New trace shows the agent
+  has the pricing answer at message 7 (``13-inch From $1099``,
+  ``15-inch From $1299``) but refuses to commit, burning 73
+  and 169 commands respectively on over-exploration before
+  hitting max_turns. This is **`AGENT_BEHAVIOR`** — a
+  termination / prompt / strategy bug, not a bp or site bug.
+  Tracked as a Phase 2 follow-up (see M2.x Apple AGENT_BEHAVIOR
+  below).
+
+  **Side finding**: 1 lazy detection in Allrecipes--0 epoch 1
+  (commands_run=0, single-turn training-data answer that
+  happened to be correct). v9's full Sonnet baseline had 0
+  lazy. Single data point; not generalizing without more
+  runs.
+
+  **What M1.6b proves about the post-mortem process**: the v1
+  "environmental drift" handwave was wrong. The v2 1/1/3
+  trace-backed split was STILL wrong on 2 of 5 samples. Only
+  running the fix and re-measuring resolved the ambiguity.
+  This is why the full M1.6b entry exists as a milestone
+  rather than as a bugfix commit: caliper's own methodology
+  demands that diagnosis claims be tested, and this is the
+  first time that loop was actually closed in this project.
+
+  Relaxed done criteria (vs an unstated "fix just the bug"
+  version):
+  - ✓ bp session state is no longer shared across samples
+  - ✓ 7 regression tests pin the prologue contract
+  - ✓ Validation re-run against the 5 v9 failed samples
+  - ✓ Per-sample outcomes recorded in v9.json under
+    `m1_6b_validation`
+  - ✓ Every wrong classification from previous rounds is
+    explicitly listed in lessons-learned.md's "what doesn't
+    hold" list (now at 11 items across 3 rounds)
+  - ✓ New AGENT_BEHAVIOR failure class from the re-run is
+    filed as its own follow-up instead of being hand-waved
 
 - [ ] **M1.7a** Heroku smoke task port
 
@@ -544,6 +645,40 @@ enforced in CI, and at least one independent run has confirmed
   **Cost reality**: ~120 runs × $0.05 ≈ $6 for one stability run.
   Cheap enough to do at v0.1 release time. May slip to Phase 4 if
   Phase 2 backlog is otherwise full.
+
+- [ ] **M2.8** Apple--0 AGENT_BEHAVIOR follow-up (from M1.6b)
+
+  During M1.6b validation, Apple--0 failed both epochs with clean
+  bp state. The new trace shows the agent has the full pricing
+  answer by message 7 (``13-inch From $1099``, ``15-inch From
+  $1299`` from ``bp read --limit 8000``) but keeps exploring —
+  clicking non-existent configurator selectors, running JS regexes
+  against `document.body.innerHTML` — for 73 / 169 commands before
+  running out of turns. This is neither a bp bug nor a site bug:
+  the agent refuses to commit to a plausible partial answer.
+
+  This is the inverse of the v0-v8 `lazy_detection` discovery:
+  lazy caught agents that answered *without* looking; this catches
+  an agent that keeps looking *after* it has the answer.
+
+  Scope:
+  - Reproduce the pattern on at least one other "compare X prices"
+    task to confirm it generalizes beyond Apple--0 (probably
+    Allrecipes--0 or a new hand-written task)
+  - Decide the fix surface: SKILL.md prompt, system prompt in
+    ``text_protocol_agent``, a new caliper scorer that flags
+    "answer was available N turns before the agent committed", or
+    a combination
+  - Write a regression test that fails on the over-exploration
+    pattern
+  - Re-validate Apple--0 with the fix and record in v9.json's
+    ``m1_6b_validation`` field (or a new m2_8_validation field)
+
+  This is effectively a Phase 2 self-eval item — it's the first
+  caliper-discovered agent-behavior bug that isn't already
+  covered by `lazy_detection` or `judge_stale_ref`. Good forcing
+  function for whether caliper's scorer layer needs a new
+  "over-commit" scorer or just a better prompt.
 
   **Done when**: v8_curated.jsonl has stability_score on every task
   and the loader warning works
