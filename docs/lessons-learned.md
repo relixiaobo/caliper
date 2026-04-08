@@ -313,3 +313,248 @@ Pass rate from 2/7 → 6/7 is **the real story of 8 weeks**, not the 7/7 →
 verifiable against the saved test-results JSON files.
 
 This is the story caliper exists to prevent for everyone else.
+
+---
+
+# Phase 1: caliper port lessons (post-extraction)
+
+The 8 rounds above are the **pre-history** of caliper — the war story
+that justified extracting it. What follows is the **first week of the
+extracted project itself**: M1.1 → M1.3 of the Phase 1 browser-pilot
+port. The lessons here are different in character — they're about the
+discipline of building a measurement-discipline framework, with all
+the meta-recursion that implies.
+
+## M1.1: the ANSWER-before-commands ordering bug
+
+The first non-trivial bug found *during* Phase 1, before any external
+review.
+
+The text-protocol agent loop was supposed to behave like this: each
+turn, parse the LLM's output, run any `bp` commands, feed results back,
+let the LLM decide when to write `ANSWER:`. Implementation was the
+obvious thing — extract `ANSWER:` first; if found, terminate; otherwise
+extract commands and run them.
+
+**The bug**: when the agent emitted both commands AND an `ANSWER:` in
+the same turn (because the LLM hallucinated what it thought the
+commands would return), the loop accepted the answer immediately and
+**never ran the commands**. The first cambridge_smoke run produced
+`judge_pass=1.0` but `lazy=1.0` — the lazy detector correctly flagged
+that no observation commands had run.
+
+**The fix**: invert the order. If the turn contains commands, run
+them and feed the real output back; ANSWER is only terminal on a turn
+with no commands. The hallucinated answer gets discarded; the real
+output forces the next turn to revise.
+
+**The lesson**: this is exactly the failure mode methodology
+principle 1 (P1) is supposed to catch — a measurement bug that
+made things look correct (judge_pass=1.0) when they were actually
+broken (lazy=1.0). The reason it was caught in 30 seconds instead
+of weeks is that **caliper had two independent scorers running on
+the same sample**. Single-scorer measurement would have shipped this.
+
+The cost of running two scorers per sample is small. The benefit
+is they cross-check each other.
+
+## Phase R: discovering the structural cliff
+
+After M1.1, I asked Claude to look at the project structure and think
+about whether it would survive Phase 3 (the chatbot scenario, which
+adds ~1500 lines of new code per `chatbot-maxturns.md`). The answer
+came back with five problems:
+
+1. **State contract is informal**: solver and scorer communicate via
+   `state.store` (an untyped dict). A typo in one side silently
+   breaks the other.
+2. **`lazy_detection` has a redundant param**: `observation_commands`
+   on the scorer is unused — the solver is the only authority.
+3. **`Strategy` not a first-class concept**: chatbot scenario needs
+   `Strategy` as an experimental axis, but caliper's solver/scorer
+   model doesn't have it.
+4. **"Caliper provides vs consumer provides" boundary is fuzzy**:
+   chatbot would want to add ~1700 lines to `caliper.*`, blowing
+   the "thin layer" promise.
+5. **bp SKILL.md path is hardcoded** to my dev machine.
+
+Five issues, all small individually, all permanent if not fixed.
+
+The decision: **stop and restructure in one shot** rather than
+patch each issue separately and accumulate technical debt. The
+math: at v0.0.1 with 6 source files, restructure cost ≈ 1 hour. At
+v0.5.0 with 50 source files, restructure cost ≈ 1 week.
+
+Phase R restructured caliper into a **uv workspace with 4 sibling
+packages** — `caliper` core + 3 adapter packages (`browser-pilot`,
+`computer-pilot`, `chatbot`). Three hard rules:
+
+1. `caliper` core never imports from any `caliper-*` adapter
+2. Adapters never import from each other
+3. Promotion to core requires the rule of three (used in ≥2 adapters)
+
+Plus the typed `SolverState` Pydantic StoreModel as the formal
+contract between solvers and scorers.
+
+**The meta-lesson**: I asked Claude to predict the structural cliff
+*before* I hit it, and the prediction was right. The cost of one
+hour of upfront structural review caught a problem that would
+have cost weeks at Phase 3. **Structural review at every milestone
+boundary is cheap insurance**.
+
+## M1.2: re-scoping cost wrapper to token observability
+
+The original M1.2 plan was to write a cost wrapper: pricing table +
+`cost_usd()` function + `cost_tracker` scorer that emits $ per
+sample. The user pushed back: "we mainly want to observe and
+control token consumption, and improve cache utilization — we're
+not really focused on actual price."
+
+That triggered a deep research pass into Inspect AI 0.3.205's
+cross-provider `ModelUsage` support. Reading every provider adapter
+under `inspect_ai/model/_providers/*.py` revealed three structural
+facts:
+
+1. **Inspect AI ships zero pricing data**. The `ModelCost` schema
+   and `compute_model_cost()` function exist, but the bundled
+   YAML files for anthropic / openai / google / grok / together /
+   mistral / deepseek have **zero `cost:` entries**. Every provider
+   returns `total_cost=None`. There is no upstream price to "prefer
+   over our own table".
+
+2. **Same-model iteration doesn't need dollars**. The iteration
+   loop caliper actually supports — SKILL.md tweaks, solver
+   parameter changes, prompt edits — holds the model fixed. Within
+   a fixed model, fewer tokens is **strictly cheaper**. Tokens
+   are cost.
+
+3. **No universal `effective_tokens` formula exists across
+   providers**. Different providers have different cache pricing
+   ratios (Anthropic cache_write=1.25×, OpenAI has no cache_write
+   at all and cache_read≈0.5×, Gemini caches differently). Any
+   single-number "effective tokens" metric using one set of weights
+   would be silently wrong for somebody.
+
+The conclusion: **drop the pricing table entirely**. Drop the
+scorer. Drop the $ field. Replace with a single
+`UsageSummary` dataclass that normalises `ModelUsage` across all 27
+Inspect AI providers, with honesty flags (`has_cache_info`,
+`has_reasoning_info`) to distinguish "provider reported zero" from
+"provider didn't report".
+
+**The lesson**: an aggressively-scoped feature can be the wrong
+abstraction. A pricing table sounded like the obvious thing to
+build, but the user's actual use case is "observe token consumption
+and cache utilization in same-model iteration". Those are simpler
+needs that **don't require any pricing knowledge at all**. The
+result is ~70 lines of code instead of ~280, with zero ongoing
+maintenance burden, and a more honest measurement layer because it
+doesn't pretend to know things it can't know (like how Bedrock's
+silent cache fields should be interpreted as a hit rate).
+
+This reinforces methodology principle 1 from a different angle:
+**don't build measurement abstractions that require knowledge you
+can't actually verify**. Pricing tables go stale silently. Honesty
+flags don't.
+
+## Three rounds of Codex review on M1.1, M1.2, M1.3 — the meta lesson
+
+Across M1.1, M1.2, M1.3 the same pattern repeated: I'd write code,
+it'd pass all my own tests, I'd ask Codex to review it, and Codex
+would find a P-level bug I hadn't seen. Total over the three
+milestones: **10 P-level bugs in 3 review rounds**.
+
+| Milestone | Round | Class | Specific finding |
+|---|---|---|---|
+| M1.1 | 1 | parser | Unbalanced quote heuristic false-positives on `bp type 7 "Don't"` |
+| M1.1 | 1 | shell | URL with `?&` characters in `bp open` not shell-quoted |
+| M1.1 | 2 | security | `run_cli` used `create_subprocess_shell` → LLM emitting `bp read; rm -rf ~` runs both |
+| M1.2 | 1 | logic | `uncached_input_tokens` dropped `cache_write_tokens`; SKILL.md spike was hidden |
+| M1.2 | 1 | aggregation | Mixed-bucket cache_hit_rate diluted by silent provider |
+| M1.2 | 2 | provider quirk | OpenAI Responses adapter sets `cache_read=None` for cold cache; classified as "unknown" instead of "0.0" |
+| M1.3 | 1 | runtime | `judge_stale_ref()` factory called `get_model()` → Task construction needed `ANTHROPIC_API_KEY` |
+| M1.3 | 1 | packaging | `setuptools.packages.find` doesn't include `data/*.jsonl`; wheel install was broken |
+| M1.3 | 2 | discovery | `inspect eval v8_baseline.py` discovered all 5 `@task` in the file → 48 runs instead of 24 |
+
+Each one has a regression test now. Each one would have shipped
+without the review.
+
+**The pattern**: every single one was an "I assumed X but didn't
+verify" failure. I assumed the quote-counting heuristic worked, the
+shell would never see metacharacters, the silent provider's
+contribution to a cache hit rate would somehow be benign, the
+factory function wouldn't touch credentials, the build system would
+"just include" data files. None of these assumptions held.
+
+**The meta-lesson**: LLM-assisted development has this failure mode
+**built in**. The LLM (Claude in this case) generates plausible code
+that passes plausible tests, and the gaps are exactly the places I
+wouldn't think to test. The fix is **mandatory structural review by
+a different model with a different prompt** at every milestone
+boundary. Not optional. Not "if I have time". Mandatory.
+
+For Phase 2 onwards: every milestone closes with a Codex review
+round. The 10 bugs above would have cost hours-to-days each in
+production debugging. The reviews caught them in minutes.
+
+Phase 1 also caught 3 bugs *I* found during my own work (the
+ANSWER-before-commands ordering, the macOS .pth hidden flag,
+the lazy detection regression in cambridge_smoke), so the total
+"bugs found before they shipped" count for Phase 1 is **13**.
+That's a lot of production bugs avoided.
+
+## macOS Sequoia .pth hidden flag — operational landmine
+
+While debugging the Phase R restructure, the `caliper` package
+suddenly stopped being importable from the venv. The `__editable__`
+.pth file was in site-packages but Python couldn't see it.
+
+After ~30 minutes of debugging (including reading `site.py` source
+in Python 3.13), the cause: **macOS Sequoia marks newly-created
+.pth files in site-packages with `UF_HIDDEN`** (visible via
+`ls -lO` and the `com.apple.provenance` extended attribute), and
+**Python 3.13's site.py refuses to process .pth files with the
+hidden flag set**. So every `uv sync` would silently break the
+editable install.
+
+The fix is **don't depend on `.pth` for tests** — set explicit
+`pythonpath = ["packages/*/src"]` in pytest config. Examples have
+to do their own `sys.path` insertion or be invoked from a wrapper
+that sets `PYTHONPATH`.
+
+**The lesson**: package installation paths that work everywhere
+**also have to work on macOS Sequoia**. This is the kind of
+landmine that costs hours of investigation per occurrence and
+isn't documented anywhere obvious. Recording it here so the next
+person doesn't lose the same hours.
+
+## Cumulative Phase 1 lesson summary
+
+The first week of caliper port shipped:
+- 4 git commits (M0.6, Phase R, M1.2, M1.3)
+- 124 unit tests across 4 packages
+- ~600 lines of `caliper` core code (+adapter packages)
+- 13 caught-before-shipping bugs (10 from Codex review, 3 from
+  internal testing/dogfooding)
+- 0 production incidents
+
+The discipline that made this work is the same discipline the v0–v8
+browser-pilot iteration *lacked*: **assume your own measurement is
+broken until proven otherwise, and have a way to prove it**. For
+caliper this means:
+
+1. Two independent scorers per sample (judge + lazy detection)
+   cross-checking each other
+2. A typed state contract (`SolverState`) so solver/scorer
+   communication can't drift silently
+3. Mandatory structural review at every milestone boundary
+4. Honesty flags on observability data so "unknown" can never be
+   confused with "zero"
+5. Regression tests for every bug caught, named after the failure
+   mode (the substring bug regression test is the prototype for
+   this naming convention)
+
+These five practices are the operational form of the 5 methodology
+principles. Phase 1 shows they work at the scale of "build a
+framework". Phase 2 (self-eval) and Phase 3 (second consumer)
+will show whether they generalise.

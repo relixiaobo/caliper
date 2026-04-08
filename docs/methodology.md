@@ -188,6 +188,22 @@ report includes `$/run`, `$/success`, and `cache_hit_rate` columns.
 Reference numbers are pinned to the date of the pricing snapshot so old
 reports remain interpretable.
 
+> **Implementation note (M1.2, 2026-04-08)**: caliper currently
+> observes **tokens + cache_hit_rate**, not dollars. The principle
+> above is the long-term direction; the v0.1 implementation reduces
+> cost-per-success to **tokens-per-success** because the iteration
+> loop caliper supports is same-model (SKILL.md tweaks, solver
+> tuning), where fewer tokens at a fixed model is strictly cheaper.
+> Cross-model dollar comparison and a pricing table are deferred
+> until a real consumer needs them — see
+> [`lessons-learned.md`](lessons-learned.md) "M1.2: re-scoping cost
+> wrapper to token observability" for the full reasoning, and
+> [`roadmap.md`](roadmap.md) "Out of scope" for the current status.
+>
+> The principle ($/success > $/run) is preserved as the philosophy.
+> The implementation (tokens, cache_hit_rate, uncached_input_tokens)
+> is the engineering reality that serves it for v0.1.
+
 ---
 
 ## How these compose
