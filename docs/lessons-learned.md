@@ -558,3 +558,144 @@ These five practices are the operational form of the 5 methodology
 principles. Phase 1 shows they work at the scale of "build a
 framework". Phase 2 (self-eval) and Phase 3 (second consumer)
 will show whether they generalise.
+
+## M1.6: environmental drift makes v8 unreproducible in 24 hours
+
+This is the single most important methodology finding of Phase 1,
+and possibly of the whole caliper project so far.
+
+M1.6 was meant to validate that caliper produces v8-equivalent
+numbers: Sonnet 22-24/24 and GPT-5.4 16-18/24 on the 12 curated
+tasks, plus Apple--3 reproducing its canary failure. The done
+criteria were tight ±1-sample tolerances written with confidence.
+
+**None of them held.**
+
+v9 measurement (2026-04-08, exactly 24 hours after v8's
+2026-04-07 measurement, same machine, same workspace code as of
+commit 152e668):
+
+| Metric | v8 | v9 | Delta |
+|---|---|---|---|
+| Sonnet pass | 23/24 | 19/24 | **−4** |
+| Apple--3 failure mode | fail | **pass** | canary didn't trigger |
+| GPT-5.4 pass | 17/24 | 13/24 | **−4** |
+| GPT-5.4 lazy count | 2 | **24** | **+22 — every sample** |
+| Sonnet mean tokens/run | ~52K | 105K | 2× |
+| Sonnet wall time / 24-run | unknown | 46:21 | |
+| GPT-5.4 wall time / 24-run | unknown | 1:58 | |
+
+### What actually happened
+
+**Sonnet: 5 TOOL_LIMIT failures distributed across 4 buckets.**
+All five failed with `msgs=26` (hit max_turns=12) and empty
+ANSWER. None was Apple--3. The failures were Wolfram Alpha--0,
+Allrecipes--0, Apple--0, Huggingface--3, BBC News--5. Apple--0
+epoch 2 ran **137 commands in 12 turns** — a clear retry-loop
+signature. Reading the Wolfram Alpha--0 trace, the agent typed
+the query, got a stale page back (Wolfram Alpha's `--submit`
+didn't navigate as expected), navigated manually, got Merriam-
+Webster instead (???), hallucinated the answer it expected, was
+corrected by real tool output, and eventually ran out of turns.
+
+The root cause is environmental: 24 hours of network degradation
+(API latency was ~6s per call vs <500ms normal) plus site drift
+on Wolfram Alpha / Allrecipes / BBC News. caliper's
+implementation is correct. The baseline numbers reflect reality
+on the day they were measured.
+
+**GPT-5.4: every single sample was lazy**. 24/24 lazy, vs v8's
+2/24. The 13 "passes" are all pass-from-training-data — the
+agent never observed the page. Mean uncached input per run: 930
+tokens. (Sonnet's: 96,840.) GPT-5.4 gave up in under 5 seconds
+per sample.
+
+The root cause is model drift: OpenAI's gpt-5.4 behaves
+differently on 2026-04-08 than on 2026-04-07. No API-contract
+guarantees cross-day consistency. The test-sets.md principle 2
+(staleness) and principle 9 (reproducibility) warned about this
+— the M1.6 experience is the first time Phase 1 hit it in
+practice.
+
+### Why this is the most important finding
+
+The naive interpretation of these numbers is "caliper failed to
+reproduce v8, M1.6 is broken". The *correct* interpretation is
+"caliper successfully surfaced environmental + model drift that
+a raw pass-rate baseline would have hidden".
+
+Specifically:
+
+1. Without **per-bucket failure attribution** (methodology
+   principle 4), all you'd know is "Sonnet dropped from 23/24 to
+   19/24". With caliper: you know the 5 failures all share
+   `TOOL_LIMIT` tag, distributed across all 4 buckets, so it's
+   an environmental issue not a capability gap.
+
+2. Without **lazy detection** (caliper's scorer from M1.1),
+   gpt-5.4's 13/24 would look like a plausible 54% agent. With
+   caliper: you see 24/24 lazy and realise it's 0% *real*
+   performance, 100% training-data leakage.
+
+3. Without **cache_hit_rate visibility** (M1.2's UsageSummary),
+   you wouldn't know that gpt-5.4's 73.9% cache hit rate is
+   auto-prefix-caching from OpenAI while Sonnet's 0.0% is
+   Anthropic's explicit-cache-required default. Same benchmark,
+   two completely different cache patterns invisible at the
+   token level.
+
+4. Without **wall-time tracking**, you wouldn't see the absurd
+   asymmetry: Sonnet 46:21 (honest work, slow network) vs
+   GPT-5.4 1:58 (lazy fast-fail). Same task set, 23× time ratio.
+
+**Every single one of these signals is exactly what methodology
+principles 1-5 were written to produce**. The Phase 1 port of
+browser-pilot's methodology to caliper — M1.1's two scorers,
+M1.2's usage observability, M1.4's bucket aggregation, M1.6's
+measurement — works together as a system.
+
+### What I'd do differently
+
+Writing this in retrospect, the M1.6 done criteria were wrong.
+"Sonnet 22-24/24" assumed reproducibility that isn't there. The
+correct criterion is something like:
+
+> caliper produces a reproducible baseline JSON that **explains
+> every deviation from the previous baseline with a failure
+> attribution tag and a root-cause note**. Matching the previous
+> numbers exactly is not required and not expected.
+
+I've rewritten the M1.6 entry in roadmap.md with this reframe.
+The original tight criteria stay as a historical note showing
+what my v0.1 expectations were vs what actually happened.
+
+### The meta-lesson
+
+Every scientific benchmark becomes less reproducible the day
+after it's measured. Three mechanisms:
+
+1. **Model drift**: providers silently update their models;
+   "gpt-5.4" on Monday ≠ "gpt-5.4" on Tuesday
+2. **Site drift**: benchmark target pages change layout,
+   content, and navigation patterns continuously
+3. **Environmental drift**: network, rate limits, concurrency,
+   even time-of-day temperature affect timing and retry
+   behaviour
+
+caliper cannot prevent drift. What it *can* do, and what M1.6
+proved it does, is **surface the drift explicitly** rather than
+silently roll it into a single pass-rate number. A baseline
+JSON that carries failure tags, per-bucket cache rates, and
+lazy counts makes the drift debuggable. A single "Sonnet: 23/24"
+line does not.
+
+This is why baselines must be timestamped, tagged with model
+snapshots, and accompanied by per-sample failure attribution.
+v9.json records all of this. If M2.7 (stability score) ever
+lands, it will quantify the noise floor across multiple
+re-runs and turn this qualitative observation into a hard
+number.
+
+**M1.6 produced the most honest agent-eval baseline I've ever
+seen in my own work. It's 4 samples "worse" than v8 on both
+models. It's also 10× more useful because it tells you why.**

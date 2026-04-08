@@ -41,3 +41,6 @@ data/cache/
 # Test results
 test-results/
 *.eval
+
+# Agent screenshots — bp screenshot drops these at cwd during eval runs
+*.png
