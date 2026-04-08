@@ -39,7 +39,11 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Sync workspace dependencies
-        run: uv sync --extra dev
+        # The dev dependency set lives in [dependency-groups] (PEP 735)
+        # in the root pyproject.toml, not [project.optional-dependencies],
+        # so we use --group not --extra. uv sync includes dev groups by
+        # default but we're explicit for the reader.
+        run: uv sync --group dev
 
       - name: Run unit tests
         run: uv run pytest packages/ -q
