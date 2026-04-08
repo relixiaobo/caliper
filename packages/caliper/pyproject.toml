@@ -27,6 +27,12 @@ dependencies = [
     "openai>=1.50",
 ]
 
+# Register the `caliper` console script. M1.5: provides
+#   caliper report  <log.eval>
+#   caliper diff    <baseline.eval> <candidate.eval>
+[project.scripts]
+caliper = "caliper.cli:main"
+
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"

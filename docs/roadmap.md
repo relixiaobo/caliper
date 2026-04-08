@@ -211,31 +211,50 @@ columns we couldn't produce before.
   numbers exactly match Inspect AI's own token report (20,769
   total / 18,254 fresh input).
 
-- [ ] **M1.5** A/B compare + `caliper` CLI
+- [x] **M1.5** A/B compare + `caliper` CLI (2026-04-08)
 
   Adds the second core report function and the first CLI surface.
   Designed coherently with M1.4 because CLI subcommands belong
   together.
 
-  - `packages/caliper/src/caliper/report/ab.py` (~150 lines):
-    - `load_ab_diff(baseline_log, candidate_log) -> ABDiff`
-    - Computes per-bucket deltas in pass rate, mean tokens,
-      cache_hit_rate, uncached_input_tokens
-    - Refuses to label improvements within the noise floor
-      (default: 2σ across the available epochs)
-    - Specifically flags the "total tokens dropped + cache_hit_rate
-      dropped" pattern as a likely cache-prefix regression
-  - `packages/caliper/src/caliper/cli.py` (~100 lines):
-    - `caliper report <log.eval>` → bucket report
-    - `caliper diff <baseline.eval> <candidate.eval>` → A/B diff
-    - Built on `argparse` (stdlib only, no click dependency)
-    - `[project.scripts]` entry in `caliper/pyproject.toml`
-  - Tests: synthetic before/after pairs verifying the noise-floor
-    refusal, the cache-regression flag, and CLI argument parsing
+  Delivered:
+  - `packages/caliper/src/caliper/report/ab.py` — `MetricDelta`,
+    `BucketDiff`, `ABDiff` frozen dataclasses +
+    `compute_ab_diff(base, cand)` + `load_ab_diff(b_log, c_log)`
+    - Noise floor: 2σ of the pooled standard error across baseline
+      and candidate. Pass rate uses the binomial SE
+      `sqrt(p*(1-p)/n)`; continuous metrics use
+      `std_sample / sqrt(n)`. Below 2 runs on either side, the
+      metric is labelled `"no estimate"` — refusing to classify
+      rather than picking a side is methodology principle 2 in
+      code.
+    - `BucketDiff.cache_regression_warning` detects the
+      "mean tokens dropped + cache_hit_rate dropped >0.10" pattern
+      (SKILL.md cache prefix invalidation). Tokens-dropped-alone
+      or tokens-grew cases correctly don't trigger.
+  - `packages/caliper/src/caliper/report/render.py` — added
+    `render_ab_diff(diff)` with vertical per-bucket layout.
+    Cache-regression warnings are called out at the end so they
+    can't be missed in long reports.
+  - `packages/caliper/src/caliper/cli.py` — `argparse`-based
+    `caliper` entry point with `report` and `diff` subcommands.
+    Stdlib only, no click dependency. Registered as
+    `[project.scripts] caliper = "caliper.cli:main"`.
+  - Tests: 21 new (11 A/B diff + 10 CLI) covering n=1 no-estimate
+    path, binomial pass-rate significance, continuous metric
+    classification, cache regression warning triggers and
+    false-trigger guards, bucket-only-in-one-side edge cases,
+    argparse parsing, and happy-path CLI dispatch against a real
+    eval log.
+  - Total tests: 164 → **185**
 
-  **Done when**: `caliper report logs/<file>.eval` prints the M1.4
-  table; `caliper diff` on a synthetic before/after with a known
-  noise-floor delta refuses to label it an improvement
+  End-to-end smoke validation: ran `v8_lookup` twice with N=1 each
+  (via `inspect eval ... @v8_lookup --epochs 1 --limit 1`), then
+  `caliper diff` between the two logs. The CLI correctly labelled
+  every metric `no estimate` (n=1 → no σ available) even though
+  token counts differed by ~49% run-to-run. That's exactly the
+  methodology principle 2 guarantee: **refuse to call improvements
+  at N=1**, no matter how dramatic they look.
 
 - [ ] **M1.6** v9 token+cache baseline + Apple--3 reproduce check
 

@@ -1,16 +1,17 @@
-"""Human-readable rendering of a ``BucketReport``.
+"""Human-readable rendering of report objects.
 
-Two output formats:
+Three output formats:
 
 - ``render_bucket_table(report)`` — fixed-width ASCII table for
-  terminal output. Used by the future ``caliper report`` CLI in M1.5
-  and by manual REPL inspection right now.
+  terminal output. Used by ``caliper report``.
 - ``render_bucket_markdown(report)`` — Markdown table for pasting
   into docs / GitHub issues / commit messages.
+- ``render_ab_diff(diff)`` — vertical per-bucket layout for A/B
+  comparison output. Used by ``caliper diff``.
 
-Both share the same column set:
+Bucket-level shared column set:
 
-    bucket | pass        | lazy   | mean tokens | uncached in | cache hit
+    bucket | pass | lazy | mean tokens | uncached in | cache hit
 
 ``cache hit`` is rendered as ``—`` (em-dash) when the bucket has
 ``cache_hit_rate=None``, which happens when no contributing sample
@@ -22,6 +23,7 @@ prevent.
 
 from __future__ import annotations
 
+from caliper.report.ab import ABDiff, BucketDiff, MetricDelta
 from caliper.report.bucket import BucketReport, BucketStats
 
 # ---------------------------------------------------------------------------
@@ -200,7 +202,151 @@ def _format_md_row(b: BucketStats, *, bold: bool) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# A/B diff renderer
+# ---------------------------------------------------------------------------
+
+
+def render_ab_diff(diff: ABDiff) -> str:
+    """Render an ``ABDiff`` as a vertical per-bucket report.
+
+    Vertical layout is more readable than a wide table when each
+    bucket has 4+ metrics × 4 columns (baseline / candidate / delta /
+    classification). One section per bucket plus a TOTAL section,
+    with cache-regression warnings called out at the end.
+
+    Example output:
+
+        Baseline:  task=v8_baseline  log=...
+        Candidate: task=v8_baseline  log=...
+
+        === lookup ===
+          pass:        6/6 100.0% → 6/6 100.0%   (+0.0,  noise)
+          mean tokens: 45,616 → 41,200           (-9.7%, real)
+          uncached:     8,920 →  7,800           (-12.6%, real)
+          cache hit:    0.81 →  0.83             (+0.02, noise)
+
+        === compare ===
+          pass:        5/6  83.3% → 5/6  83.3%   (+0.0,  noise)
+          mean tokens: 105,841 → 92,300          (-12.8%, real)
+          uncached:    62,210 → 78,500           (+26.2%, real)
+          cache hit:    0.41 →  0.18             (-0.23, real)
+
+        === TOTAL ===
+          ...
+
+        ⚠ compare bucket: mean tokens dropped 12.8% but cache_hit_rate
+          dropped 0.23. Likely SKILL.md cache prefix was invalidated.
+          Investigate.
+    """
+    lines: list[str] = []
+
+    # Header — task / model / log paths for both sides
+    base_name = diff.baseline.task_name or "<unknown>"
+    cand_name = diff.candidate.task_name or "<unknown>"
+    lines.append(f"Baseline:  task={base_name}  log={diff.baseline.log_path}")
+    lines.append(f"Candidate: task={cand_name}  log={diff.candidate.log_path}")
+    lines.append("")
+
+    for bucket_diff in diff.bucket_diffs:
+        lines.extend(_render_bucket_section(bucket_diff))
+        lines.append("")
+
+    # TOTAL section last — clearly delineated
+    lines.extend(_render_bucket_section(diff.overall, is_total=True))
+
+    # Cache-regression warnings (if any) appended at the bottom so
+    # they can't be missed in long reports.
+    warnings = diff.cache_regression_warnings
+    if warnings:
+        lines.append("")
+        for w in warnings:
+            lines.append(w)
+
+    return "\n".join(lines)
+
+
+def _render_bucket_section(diff: BucketDiff, *, is_total: bool = False) -> list[str]:
+    """Format one bucket's metrics block."""
+    title = "TOTAL" if is_total else diff.bucket
+    n_info = f"  ({diff.n_runs_baseline} → {diff.n_runs_candidate} runs)"
+    section: list[str] = [f"=== {title} ==={n_info}"]
+    section.append(f"  pass:         {_fmt_pass_delta(diff.pass_rate)}")
+    section.append(
+        f"  mean tokens:  {_fmt_continuous_delta(diff.mean_total_tokens, integer=True)}"
+    )
+    section.append(
+        f"  uncached:     {_fmt_continuous_delta(diff.mean_uncached_input_tokens, integer=True)}"
+    )
+    section.append(f"  cache hit:    {_fmt_cache_hit_delta(diff.cache_hit_rate)}")
+    return section
+
+
+def _fmt_pass_delta(m: MetricDelta) -> str:
+    """Format pass_rate as ``XX.X% → YY.Y%   (Δ%, label)``."""
+    base = m.baseline
+    cand = m.candidate
+    if base is None or cand is None:
+        return "(no data)"
+    base_pct = 100.0 * base
+    cand_pct = 100.0 * cand
+    delta_pct = cand_pct - base_pct
+    sign = "+" if delta_pct >= 0 else ""
+    label = _classification_label(m)
+    return f"{base_pct:5.1f}% → {cand_pct:5.1f}%   ({sign}{delta_pct:.1f}pp, {label})"
+
+
+def _fmt_continuous_delta(m: MetricDelta, *, integer: bool) -> str:
+    """Format a continuous-metric delta as ``X → Y  (Δ%, label)``."""
+    base = m.baseline
+    cand = m.candidate
+    if base is None or cand is None:
+        return "(no data)"
+    if integer:
+        base_str = f"{base:,.0f}"
+        cand_str = f"{cand:,.0f}"
+    else:
+        base_str = f"{base:.3f}"
+        cand_str = f"{cand:.3f}"
+    if base != 0:
+        delta_pct = 100.0 * (cand - base) / base
+        sign = "+" if delta_pct >= 0 else ""
+        delta_str = f"{sign}{delta_pct:.1f}%"
+    else:
+        delta_str = f"{cand - base:+,.0f}"
+    label = _classification_label(m)
+    return f"{base_str} → {cand_str}   ({delta_str}, {label})"
+
+
+def _fmt_cache_hit_delta(m: MetricDelta) -> str:
+    """Format cache_hit_rate as ``0.XX → 0.YY  (Δ, label)`` with em-dash
+    fallback when either side is None."""
+    base = m.baseline
+    cand = m.candidate
+    if base is None and cand is None:
+        return "—  → —"
+    if base is None:
+        return f"—  → {cand:.2f}   (no baseline cache info)"
+    if cand is None:
+        return f"{base:.2f} → —   (no candidate cache info)"
+    delta = cand - base
+    sign = "+" if delta >= 0 else ""
+    label = _classification_label(m)
+    return f"{base:.2f} → {cand:.2f}   ({sign}{delta:.2f}, {label})"
+
+
+def _classification_label(m: MetricDelta) -> str:
+    """Map MetricDelta.classification to a render-friendly label."""
+    cls = m.classification
+    if cls == "real":
+        return "real"
+    if cls == "noise":
+        return "noise"
+    return "no estimate"
+
+
 __all__ = [
     "render_bucket_table",
     "render_bucket_markdown",
+    "render_ab_diff",
 ]
