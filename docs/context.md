@@ -126,66 +126,78 @@ You **may** modify browser-pilot's eval directory:
 
 ---
 
-## What you should NOT touch in caliper itself (yet)
+## What you should NOT touch in caliper itself
 
 - The `docs/` narrative files (`why`, `methodology`, `architecture`,
-  `self-evaluation`, `lessons-learned`) describe the design philosophy.
-  Edit them only if you're updating the design itself, not when porting
-  code.
+  `test-sets`, `self-evaluation`, `lessons-learned`, `chatbot-maxturns`)
+  describe the design philosophy. Edit them only if you're updating the
+  design itself, not when porting code.
+- The `docs/reference/` files are verbatim port artifacts from
+  browser-pilot — `inherited-artifacts.md` is especially load-bearing.
+  Don't "improve" the prompts/parsers/sets in there without re-running
+  the relevant self-eval suite.
 - The `LICENSE` is MIT and shouldn't change.
-- The `pyproject.toml` is a Phase 0 stub — you'll add real dependencies
-  in M1.1, but don't change the package name without good reason.
+- The root `pyproject.toml` is the uv workspace declaration. Add new
+  workspace members under `[tool.uv.sources]`, don't move it around.
+- The hard rule from `architecture.md`: `caliper` core never imports
+  from any `caliper-*` adapter package, and adapters never import from
+  each other. If you find yourself wanting to break this rule, the
+  right move is usually to define a new abstraction in
+  `caliper.protocols` or `caliper.{scorers,solvers}`.
 
 ---
 
-## Where things go in Phase 1
+## Workspace layout (post Phase R)
 
-When you start writing code in M1.1, follow this layout:
+Caliper is a uv workspace with four sibling Python packages. Full
+contract is in [`architecture.md`](architecture.md#workspace-layout--single-git-repo-multiple-python-packages);
+this section is the file pointers a contributor needs day-to-day.
 
 ```
-caliper/
-├── src/caliper/                    # ← create this in M1.1
-│   ├── __init__.py
-│   ├── solvers/
-│   │   ├── __init__.py
-│   │   └── text_protocol.py        # M1.1 — wraps any CLI tool
-│   ├── scorers/
-│   │   ├── __init__.py
-│   │   ├── json_verdict.py         # M1.1 — anti-substring-bug parser
-│   │   ├── judge_stale_ref.py      # M1.1 — port v8 judge prompt
-│   │   ├── lazy_detection.py       # M1.1 — observation-based check
-│   │   └── cost_tracker.py         # M1.2 — $ cost from cache fields
-│   ├── metrics/
-│   │   ├── __init__.py
-│   │   ├── pricing.py              # M1.2 — pinned-date pricing table
-│   │   └── cost.py                 # M1.2 — cost_usd() helper
-│   ├── datasets/
-│   │   ├── __init__.py
-│   │   └── webvoyager.py           # M1.3 — load WebVoyager_data.jsonl
-│   └── report/
-│       ├── __init__.py
-│       ├── bucket.py               # M1.4 — aggregate by metadata.bucket
-│       └── ab.py                   # M1.5 — diff two .eval log files
+caliper/                              # git repo, single venv
+├── pyproject.toml                    # uv workspace declaration
+├── packages/
+│   ├── caliper/                      # ★ core (~600 lines, ceiling 800)
+│   │   └── src/caliper/
+│   │       ├── protocols.py          # SolverState, Strategy, validate_task_metadata
+│   │       ├── parsers/{shell,commands,answer}.py
+│   │       ├── runtime/{subprocess,env}.py
+│   │       ├── solvers/text_protocol.py    # generic CLI text-protocol agent
+│   │       ├── scorers/{json_verdict,judge_stale_ref,lazy_detection,multi_dim}.py
+│   │       ├── strategies/__init__.py     # Strategy Protocol class only
+│   │       ├── mocks/                     # framework infra (Phase 3)
+│   │       ├── metrics/                   # cost + pricing (M1.2)
+│   │       ├── report/                    # bucket + ab (M1.4 / M1.5)
+│   │       └── datasets/                  # generic loaders (M1.3)
+│   │   └── tests/unit/                    # 42 tests, all green
+│   │
+│   ├── caliper-browser-pilot/        # bp adapter
+│   │   └── src/caliper_browser_pilot/
+│   │       ├── tools.py              # BP_OBSERVATION_COMMANDS, bp_truncate_snapshot, bp_skill_path
+│   │       ├── solver.py             # bp_agent() factory
+│   │       └── tasks/                # 12 v8 tasks (M1.3) + 4 heroku (M1.7)
+│   │
+│   ├── caliper-computer-pilot/       # cu adapter (Phase 3a skeleton)
+│   └── caliper-chatbot/              # chatbot scenario (Phase 3b skeleton)
 │
-├── tests/                          # ← create this in M2.x
-│   ├── unit/
-│   │   └── test_json_verdict_parser.py  # the bug regression test
-│   └── self_eval/
-│       ├── judge_quality.py
-│       ├── lazy_detection_quality.py
-│       └── ...
+├── examples/
+│   ├── quickstart.py                 # 30-second on-ramp
+│   └── cambridge_smoke.py            # M1.1 example, lives here permanently
 │
-├── examples/                       # ← create this in M1.1
-│   ├── cambridge_smoke.py          # M1.1 — first end-to-end task
-│   └── browser_pilot_v8/           # M1.3 — full 12-task baseline
-│       ├── tasks.py
-│       └── data.jsonl
-│
-└── baselines/                      # ← create this in M1.6
-    └── v9.json                     # the first cost-aware baseline
+├── baselines/                        # v9.json lands in M1.6
+└── docs/                             # all narrative + reference docs
 ```
 
-`logs/` will be auto-created by `inspect eval` and is gitignored.
+`logs/` and `.venv/` are auto-created and gitignored.
+
+### Where to put a new task
+
+1. **Same shape as bp / cu** → drop a `Sample(...)` in
+   `packages/caliper-<adapter>/src/caliper_<adapter>/tasks/`
+2. **New shape (different agent loop)** → new sibling package under
+   `packages/`, mirroring `caliper-browser-pilot`'s structure
+3. **Generic to all adapters (judge, parser, etc.)** → only after the
+   rule of three; see `architecture.md` "promotion to core"
 
 ---
 

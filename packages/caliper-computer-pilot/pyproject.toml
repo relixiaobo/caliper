@@ -1,0 +1,20 @@
+[project]
+name = "caliper-computer-pilot"
+version = "0.0.1"
+description = "Caliper adapter for computer-pilot (the cu CLI). Phase 3a — skeleton only, implementation pending."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Caliper contributors" }]
+
+# Adapter package. Depends on caliper. NEVER imports from any other
+# caliper-* adapter package.
+dependencies = [
+    "caliper",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -42,18 +42,30 @@ you don't have to rediscover them.
 
 ## Status
 
-**Phase 0 — Documentation scaffolding** (current). No runnable code yet. The
-project is being designed in `docs/` first, then implemented in Phase 1.
+**Phase 1 — M1.1 complete + workspace restructure** (current).
 
-See [docs/roadmap.md](docs/roadmap.md) for the plan.
+Caliper is a **uv workspace** containing four sibling Python packages:
+
+| Package | Role | Status |
+|---|---|---|
+| `caliper` | Core framework — protocols, parsers, scorers, generic solvers | M1.1 complete |
+| `caliper-browser-pilot` | Adapter for the `bp` CLI (browser-pilot v8 baseline) | bp_agent done; 12 tasks land in M1.3 |
+| `caliper-computer-pilot` | Adapter for the `cu` CLI (computer-pilot) | Skeleton; implementation in Phase 3a |
+| `caliper-chatbot` | Scenario package for chatbot maxTurns A/B (1500 lines, 9 strategies) | Skeleton; implementation in Phase 3b. Full design in [`docs/chatbot-maxturns.md`](docs/chatbot-maxturns.md) |
+
+See [docs/roadmap.md](docs/roadmap.md) for the milestone plan and
+[docs/architecture.md](docs/architecture.md#workspace-layout--single-git-repo-multiple-python-packages)
+for the workspace contract.
 
 ## Quick links
 
 - [Why this exists](docs/why.md) — the case for evidence-based iteration
 - [Methodology](docs/methodology.md) — the 5 core principles
 - [Architecture](docs/architecture.md) — how it composes with Inspect AI
+- [Test sets](docs/test-sets.md) — where tasks come from, how to vet them, the 5-layer strategy
 - [Self-evaluation](docs/self-evaluation.md) — how caliper tests itself
 - [Lessons learned](docs/lessons-learned.md) — the 8-week story
+- [Chatbot maxTurns scenario](docs/chatbot-maxturns.md) — the second worked example: termination-strategy A/B
 - [Roadmap](docs/roadmap.md) — phases, milestones, effects tracking
 
 ## License

@@ -1,0 +1,35 @@
+[project]
+name = "caliper"
+version = "0.0.1"
+description = "Evidence-based iteration framework for agent stacks. Built on Inspect AI."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Caliper contributors" }]
+keywords = ["llm", "agent", "evaluation", "benchmark", "inspect-ai"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# CORE package. Hard rule: caliper never imports from any caliper-* adapter
+# package. Adapters import from caliper, never the reverse. See
+# docs/architecture.md "Workspace layout" for the full contract.
+dependencies = [
+    "inspect-ai>=0.3",
+    "anthropic>=0.40",
+    "openai>=1.50",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

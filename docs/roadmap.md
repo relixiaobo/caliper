@@ -7,6 +7,103 @@ explicit milestones with success criteria so progress is unambiguous.
 **Update this file every time a milestone is completed.** The git history
 of this file is the project log.
 
+## Phase R: Workspace restructure (2026-04-07)
+
+**Goal**: Lock in the hybrid architecture (core + scenarios as sibling
+workspace packages) before any more code lands. The structure decision
+is the expensive part; the file moves are mechanical.
+
+**Why this phase exists**: After M1.1, a structural review showed that
+the original single-package layout would crack under Phase 3 (chatbot
+scenario adds ~1500 lines and a new `Strategy` axis). Restructuring at
+v0.0.1 with 6 source files is virtually free; restructuring at v0.5.0
+with 50 files is painful. So we did it now, in one shot.
+
+### Milestones
+
+- [x] **R0** Decision: hybrid architecture
+  - One git repo, four sibling packages, uv workspace
+  - Hard rule: `caliper` core never imports from any `caliper-*` adapter
+  - Hard rule: adapters never import from each other
+  - Promotion to core requires the rule of three
+  - **Recorded in**: `docs/architecture.md` "Workspace layout" section
+
+- [x] **R1** Workspace skeleton
+  - `pyproject.toml` declares `[tool.uv.workspace]` members
+  - 4 packages created: `caliper`, `caliper-browser-pilot`,
+    `caliper-computer-pilot`, `caliper-chatbot`
+  - Each has its own `pyproject.toml` and `README.md`
+
+- [x] **R2** Core protocols + parsers + runtime helpers
+  - `caliper.protocols` — `SolverState` (Pydantic StoreModel), `Strategy`
+    Protocol class, `validate_task_metadata()`
+  - `caliper.parsers.{shell,commands,answer}` — split out of
+    text_protocol.py
+  - `caliper.runtime.{subprocess,env}` — split out of text_protocol.py
+    and `cambridge_smoke.py`
+
+- [x] **R3** Move scorers + drop redundant params
+  - All three M1.1 scorers moved to `packages/caliper/`
+  - `lazy_detection` lost its `observation_commands` parameter (it was
+    unused — the solver is the only authority)
+  - `multi_dim.py` skeleton added for chatbot scorer (Phase 3b)
+  - All scorers now read state via `state.store_as(SolverState)`,
+    eliminating string-key access entirely
+
+- [x] **R4** caliper-browser-pilot adapter content
+  - `tools.py`: `BP_OBSERVATION_COMMANDS`, `bp_truncate_snapshot`
+    (bp-specific JSON shape — moved out of caliper core), `bp_skill_path()`
+    (env-var-first SKILL.md resolver, replaces hardcoded path)
+  - `solver.py`: `bp_agent()` factory wrapping the generic solver with
+    bp defaults
+
+- [x] **R5** Skeletons for caliper-computer-pilot and caliper-chatbot
+  - Empty modules + docstrings + `# TODO` markers pointing at the
+    relevant roadmap milestones (M3a / M3b) and design docs
+
+- [x] **R6** Tests moved + new tests added
+  - 11 json_verdict tests (moved)
+  - 12 text_protocol parser tests (moved)
+  - **NEW**: 7 protocols tests (SolverState + metadata validation)
+  - **NEW**: 4 runtime/env tests
+  - **NEW**: 8 shell parser tests (`is_unterminated_shell`,
+    `command_verb`)
+  - **NEW**: 7 caliper-browser-pilot tools tests (snapshot formatter,
+    SKILL path resolver)
+  - **NEW**: 2 skeleton smoke tests (chatbot, cu)
+  - `examples/cambridge_smoke.py` rewritten to import via
+    `caliper_browser_pilot.bp_agent` and `caliper.runtime.load_dotenv`,
+    no more hardcoded paths
+  - `examples/quickstart.py` added — 30-second on-ramp
+
+- [x] **R7** Verification
+  - **51/51 unit tests pass** across all 4 packages
+  - End-to-end smoke run (Cambridge Dictionary--3): judge_pass=True,
+    lazy=False, 15,441 tokens (v8 baseline anchor: 14K — within range),
+    7 messages, 2 commands_run, observed_page=True
+  - Store keys are now `SolverState:agent_answer` etc., confirming
+    the typed contract is wired through
+
+- [x] **R8** Doc updates
+  - `architecture.md` — full workspace layout + dependency contract +
+    typed solver-scorer contract + Strategy axis section
+  - `roadmap.md` — Phase R recorded (this section); Phase 3 reorganised
+    around the new structure (see below)
+  - `README.md` — status updated to reflect 4-package workspace
+  - `context.md` — file pointers updated to packages/ paths
+
+### Phase R effects
+
+- caliper core stays at <1000 lines (currently ~600)
+- Scenario PRs cannot touch core regression tests by accident
+- Adding a new task is 2 minutes (drop a Sample in the right tasks/ dir)
+- Adding a new CLI is half a day (new adapter package, ~150 lines)
+- Adding chatbot maxTurns scenario is bounded to ~1500 lines that live
+  in `caliper-chatbot/`, not in core
+- Cross-package refactoring is one PR (single repo)
+
+---
+
 ## Phase 0: Documentation scaffolding (current)
 
 **Goal**: Commit to architecture, methodology, and roadmap before writing
@@ -44,10 +141,10 @@ because the docs were ambiguous is high.
   - **Done when**: A new contributor can start Phase 1 without needing
     to read `browser-pilot/tests/agent/run.py`
 
-- [ ] **M0.5** Push to remote (optional, when ready)
-  - GitHub repo created
-  - First push
-  - **Done when**: Remote URL is reachable and matches local
+- [x] **M0.5** Push to remote
+  - GitHub repo created: https://github.com/relixiaobo/caliper (public)
+  - First push complete (main tracks origin/main)
+  - **Done when**: Remote URL is reachable and matches local ✓ (2026-04-07)
 
 ### Phase 0 effects (what we'll know after this phase)
 
@@ -73,25 +170,23 @@ cost-aware report we couldn't produce before.
 
 ### Milestones
 
-- [ ] **M1.1** Inspect AI installed and one task end-to-end
-  - `uv add inspect-ai anthropic openai`
-  - Write `src/caliper/__init__.py` placeholder
-  - Write `src/caliper/solvers/text_protocol.py` (~150 lines) — uses the
-    extractor from
-    [`reference/inherited-artifacts.md` §4](reference/inherited-artifacts.md)
-  - Write `src/caliper/scorers/json_verdict.py` (~50 lines) — port the
-    parser from [§2](reference/inherited-artifacts.md), include the
-    `test_keyword_incorrect_fallback_NOT_substring_bug` regression test
-  - Write `src/caliper/scorers/judge_stale_ref.py` (~80 lines) — port
-    the prompt from [§1](reference/inherited-artifacts.md) verbatim
-  - Write `src/caliper/scorers/lazy_detection.py` (~60 lines) — use the
-    `OBSERVATION_COMMANDS` set from [§3](reference/inherited-artifacts.md)
-  - Write `examples/cambridge_smoke.py` — use the
-    `Cambridge Dictionary--3` task from
-    [`reference/curated-tasks.md`](reference/curated-tasks.md)
-  - Run: `inspect eval examples/cambridge_smoke.py --model anthropic/claude-sonnet-4-6`
-  - **Done when**: One task completes end-to-end and `inspect view` shows
-    the trace
+- [x] **M1.1** Inspect AI installed and one task end-to-end (2026-04-07)
+  - `uv add inspect-ai anthropic openai` ✓ (inspect-ai 0.3.205)
+  - `src/caliper/__init__.py` placeholder ✓
+  - `src/caliper/solvers/text_protocol.py` ✓ (~250 lines incl. parsers + truncator)
+  - `src/caliper/scorers/json_verdict.py` ✓ — 11/11 unit tests pass,
+    including `test_keyword_incorrect_fallback_NOT_substring_bug`
+  - `src/caliper/scorers/judge_stale_ref.py` ✓ — v8 prompt verbatim
+  - `src/caliper/scorers/lazy_detection.py` ✓ — bp observation set
+  - `examples/cambridge_smoke.py` ✓ — Cambridge Dictionary--3
+  - Smoke run: judge_pass=1, lazy=0, 10.5K tokens, 2 commands, 5 messages
+  - **Bug found and fixed during M1.1**: solver originally checked
+    `extract_answer` before `extract_commands`. When the agent emitted
+    both commands and an `ANSWER:` in the same turn (hallucinating tool
+    output), the answer was accepted without ever running the commands.
+    Fix: extract commands first; ANSWER is only terminal on a turn with
+    no commands. This is exactly the kind of measurement-layer bug
+    methodology principle 1 exists to catch.
 
 - [ ] **M1.2** Cost wrapper
   - `src/caliper/metrics/pricing.py` with per-model pricing table
@@ -222,32 +317,102 @@ caught the v0-v4 substring bug in 30 seconds.
 
 ---
 
-## Phase 3: Second consumer (Week 4-5)
+## Phase 3: Second + third scenarios
 
-**Goal**: Validate that caliper's abstractions are general by integrating
-a second project that's not browser-pilot.
+**Goal**: Validate that caliper's abstractions are general by populating
+both the `caliper-computer-pilot` and `caliper-chatbot` workspace
+packages with real implementations.
 
-**Success criterion**: A second project successfully uses caliper without
-needing to fork or modify caliper internals.
+**Success criterion**: Both adapter packages produce real numbers
+without requiring any change to `caliper` core. If core needs a change,
+the change is small (<100 lines), motivated by both adapters
+(rule-of-three), and adds a new abstraction rather than changing an
+existing one.
 
-### Candidates (pick one to start)
+> The package skeletons for both already exist (Phase R). The work in
+> Phase 3 is filling them in.
 
-**A. computer-pilot migration**
-- [ ] M3a.1 Write `cu_text_protocol_solver` (~100 lines, mostly mirrors
-      `bp_text_protocol_solver`)
-- [ ] M3a.2 Port computer-pilot's 3 existing agent test tasks to caliper
-- [ ] M3a.3 Run; compare to computer-pilot's existing baseline numbers
-- [ ] M3a.4 Confirm caliper internals didn't need any changes
+### Phase 3a: computer-pilot adapter
 
-**B. chatbot maxTurns A/B harness**
-- [ ] M3b.1 Implement 9 limit-handling strategies (HardCut, ForceFinalize,
-      PauseTurn, SoftWarn, MultiStage, etc.) as caliper Solvers
-- [ ] M3b.2 Design 5-10 mock tools and budget-exhausting tasks
-- [ ] M3b.3 Write multi-dimensional `chatbot_ux_judge` scorer (5 dimensions:
-      completeness, usefulness, honesty, no-fabrication, no-error-surface)
-- [ ] M3b.4 Run the matrix: 9 strategies × N tasks × 2 models × 3 runs
-- [ ] M3b.5 Produce the strategy-comparison report
-- [ ] M3b.6 Confirm caliper internals didn't need any changes
+Lives in `packages/caliper-computer-pilot/`. Expected size: ~300 lines
+total (mirrors `caliper-browser-pilot` shape).
+
+- [ ] **M3a.1** Implement `caliper_computer_pilot.tools`:
+      `CU_OBSERVATION_COMMANDS`, `cu_truncate_snapshot` for cu's
+      accessibility-tree JSON shape, `cu_skill_path()` env-var resolver
+- [ ] **M3a.2** Implement `caliper_computer_pilot.solver.cu_agent()` —
+      thin wrapper over `caliper.solvers.text_protocol_agent`
+- [ ] **M3a.3** Port computer-pilot's 3 existing agent test tasks into
+      `tasks/`. Run via `inspect eval`.
+- [ ] **M3a.4** Compare to computer-pilot's existing baseline numbers
+- [ ] **M3a.5** Confirm `caliper` core didn't need any changes (success
+      = the only files touched outside `caliper-computer-pilot/` are
+      docs and the workspace lockfile)
+
+### Phase 3b: chatbot maxTurns scenario
+
+Lives in `packages/caliper-chatbot/`. Expected size: ~1500 lines.
+Full design is in [`docs/chatbot-maxturns.md`](chatbot-maxturns.md).
+Implementation follows that doc's §8 phased rollout.
+
+#### Phase 3b — Step 0: core protocol additions
+
+A small amount of new code MAY land in `caliper` core to support this
+scenario. The bar is "needed by both chatbot and at least one other
+scenario or general use case":
+
+- [ ] **M3b.0a** `caliper.scorers.multi_dim` — multi-dimensional scorer
+      base class (currently a placeholder). RAG quality, chain-of-thought
+      quality, and other future scorers will reuse it.
+- [ ] **M3b.0b** `caliper.mocks` — mock-tool framework infrastructure
+      (currently a placeholder). Generic infrastructure for defining
+      deterministic mock tools, registering them with a solver, and
+      recording/replaying traces.
+- [ ] **M3b.0c** `caliper.solvers.strategy_loop` — generic agent loop
+      that takes a `Strategy` hook. Used by chatbot but designed to be
+      reusable by any scenario that varies meta-policy.
+
+If any of these grow beyond ~150 lines or require changing the existing
+`caliper.solvers.text_protocol` API, stop and reconsider — the goal is
+to add a new abstraction, not to retrofit the existing one.
+
+#### Phase 3b — Step 1: minimum viable closed loop (~3 days)
+
+Per `docs/chatbot-maxturns.md` §8 Step 1:
+
+- [ ] **M3b.1.1** Implement 3 most-differentiated strategies:
+      `caliper_chatbot.strategies.hard_cut`, `force_finalize_strict`,
+      `multi_stage`
+- [ ] **M3b.1.2** Implement 1 mock task: `tasks.research_grants` with
+      its mocks
+- [ ] **M3b.1.3** Implement `caliper_chatbot.scorers.ux_judge`
+      (5 dimensions: completeness, usefulness, honesty, no_fabrication,
+      no_error_surface)
+- [ ] **M3b.1.4** Implement `caliper_chatbot.solver.limit_strategy_agent`
+      using `caliper.solvers.strategy_loop`
+- [ ] **M3b.1.5** Run: 1 model × 1 budget × 1 task × 3 strategies × N=3 = 9 runs
+- [ ] **M3b.1.6** Validate the judge produces sensible scores; inspect
+      9 traces in `inspect view`
+
+#### Phase 3b — Step 2: full Phase A (~1 day)
+
+Per `docs/chatbot-maxturns.md` §4.4 Phase A:
+
+- [ ] **M3b.2.1** Implement remaining 6 strategies: `silent_stop`,
+      `force_finalize_lenient`, `soft_warn`, `pause_turn`,
+      `adaptive_budget`, `token_budget`
+- [ ] **M3b.2.2** Implement remaining 4 mock tasks: `debug_auth`,
+      `shopping_compare`, `multi_source`, `compound_task`
+- [ ] **M3b.2.3** Run the full Phase A matrix:
+      1 model × 1 budget × 5 tasks × 9 strategies × 3 runs = 135 runs
+- [ ] **M3b.2.4** Produce the 9-strategy × 5-dimension UX matrix
+
+#### Phase 3b — Step 3: cross-model + budget sweep (~2 days)
+
+- [ ] **M3b.3.1** Phase B: 3 models × top 5 strategies × 5 tasks × 3 runs
+- [ ] **M3b.3.2** Phase C: budget sweep on top 3 strategies, 6 maxTurns
+      values
+- [ ] **M3b.3.3** Final report: ready for publication / internal review
 
 ### Decision point after Phase 3
 

@@ -1,0 +1,20 @@
+[project]
+name = "caliper-chatbot"
+version = "0.0.1"
+description = "Caliper scenario package for the chatbot maxTurns termination-strategy A/B. Phase 3b — skeleton only, implementation pending. See docs/chatbot-maxturns.md for the design."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Caliper contributors" }]
+
+# Scenario package. Depends on caliper. NEVER imports from any other
+# caliper-* adapter package.
+dependencies = [
+    "caliper",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

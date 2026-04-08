@@ -1,0 +1,20 @@
+[project]
+name = "caliper-browser-pilot"
+version = "0.0.1"
+description = "Caliper adapter for browser-pilot (the bp CLI). Provides bp-specific tools, snapshot formatting, and the v8 baseline tasks."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Caliper contributors" }]
+
+# Adapter package. Depends on caliper. NEVER imports from any other
+# caliper-* adapter package.
+dependencies = [
+    "caliper",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

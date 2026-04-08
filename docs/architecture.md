@@ -246,26 +246,128 @@ exists to encode those lessons as the path of least resistance:
 If you'd find these defaults useful, use caliper. If you're confident you
 won't trip on these traps, use Inspect AI directly.
 
-## Repository layout
+## Workspace layout — single git repo, multiple Python packages
+
+Caliper is structured as a **uv workspace**: one git repo, four
+sibling Python packages, single venv, single lockfile. This is the
+hybrid of "thin core" and "scenarios live with the framework" — see
+`docs/roadmap.md` Phase R for the rationale.
 
 ```
-caliper/
-├── README.md
-├── LICENSE
-├── pyproject.toml
-├── docs/                   # this directory
-├── src/caliper/            # added in Phase 1
-│   ├── solvers/
-│   ├── scorers/
-│   ├── metrics/
-│   ├── report/
-│   └── datasets/
-├── tests/
-│   ├── unit/               # traditional unit tests
-│   └── self_eval/          # caliper testing caliper
-└── examples/
-    └── quickstart.md
+caliper/                              # git repo root
+├── pyproject.toml                    # uv workspace declaration
+├── packages/
+│   ├── caliper/                      # ★ CORE — ~800 line ceiling
+│   │   ├── pyproject.toml
+│   │   ├── src/caliper/
+│   │   │   ├── protocols.py          # SolverState, Strategy, TaskMetadata — typed contracts
+│   │   │   ├── parsers/              # shell.py, commands.py, answer.py — pure functions
+│   │   │   ├── runtime/              # subprocess.py, env.py — async helpers
+│   │   │   ├── solvers/              # text_protocol agent loop (generic)
+│   │   │   ├── strategies/           # Strategy Protocol class only, zero implementations
+│   │   │   ├── scorers/              # json_verdict, judge_stale_ref, lazy_detection, multi_dim base
+│   │   │   ├── mocks/                # mock-tool framework infrastructure
+│   │   │   ├── metrics/              # cost, pricing (M1.2)
+│   │   │   ├── report/               # bucket, ab, multi_dim (M1.4 / M1.5)
+│   │   │   └── datasets/             # generic loaders for public benchmarks (M1.3)
+│   │   └── tests/{unit, self_eval}/
+│   │
+│   ├── caliper-browser-pilot/        # ★ ADAPTER — knows about bp
+│   │   ├── pyproject.toml
+│   │   └── src/caliper_browser_pilot/
+│   │       ├── tools.py              # BP_OBSERVATION_COMMANDS, bp_truncate_snapshot, bp_skill_path
+│   │       ├── solver.py             # bp_agent() factory wrapping caliper.solvers.text_protocol_agent
+│   │       └── tasks/                # 12 v8 tasks (M1.3) + 4 heroku smoke (M1.7)
+│   │
+│   ├── caliper-computer-pilot/       # ★ ADAPTER — Phase 3a skeleton, knows about cu
+│   │   └── src/caliper_computer_pilot/
+│   │       ├── tools.py              # CU_OBSERVATION_COMMANDS (TODO M3a)
+│   │       ├── solver.py             # cu_agent() (TODO M3a)
+│   │       └── tasks/                # ports computer-pilot's 3 agent tests (TODO M3a)
+│   │
+│   └── caliper-chatbot/              # ★ SCENARIO — Phase 3b skeleton
+│       └── src/caliper_chatbot/
+│           ├── strategies/           # 9 LimitStrategy implementations (TODO M3b)
+│           ├── scorers/              # multi-dim chatbot UX judge (TODO M3b)
+│           ├── mocks/                # 5 mock task implementations (TODO M3b)
+│           ├── tasks/                # 5 budget-exhausting task definitions (TODO M3b)
+│           └── solver.py             # limit_strategy_agent (TODO M3b)
+│
+├── examples/                         # tiny one-file demos
+│   ├── quickstart.py                 # 30-second on-ramp
+│   └── cambridge_smoke.py            # M1.1 example
+│
+├── baselines/                        # anchor numbers (M1.6 onward)
+└── docs/                             # all narrative + reference docs
 ```
 
-The consumer side (browser-pilot, chatbot-bench) lives in the consumer's own
-repository, importing caliper as a Python dependency.
+### The dependency contract
+
+Three hard rules make this structure work:
+
+1. **`caliper` core never imports from any `caliper-*` adapter package.**
+   The dependency arrow always points one way. This is what keeps core
+   small and stable.
+
+2. **Adapter packages never import from each other.**
+   `caliper-browser-pilot` cannot use anything from `caliper-chatbot`
+   and vice versa. Adapters are siblings, not a graph. If two adapters
+   need the same code, the candidate goes to caliper core (rule 3).
+
+3. **Promotion to core requires the rule of three.**
+   Code starts in an adapter. If the same abstraction appears in
+   two adapters, it becomes a *candidate* for promotion. Promotion
+   requires a self-eval test, a doc note, and explicit intent.
+   Default is to NOT promote — premature abstraction is the worse
+   failure mode.
+
+### Why this shape and not the alternatives
+
+| Choice | Why we rejected it |
+|---|---|
+| **Monolith** (all scenarios inside `caliper`) | Core balloons to 5000+ lines as scenarios accumulate. Scenario PRs can break core regression tests. The "thin layer" promise dies. This is the LangChain failure mode. |
+| **Multi-repo** (separate git repos per scenario) | Premature for a 1-week-old project. 4 repos × 4 CI configs × 4 dependency syncs is friction without payoff at this scale. We can split later if needed (a workspace is a single-direction door — easy to split, hard to merge). |
+| **Workspace + multi-package** (current choice) | One clone, one venv, cross-package refactor is one PR, package boundaries are enforced by import rules. The pattern proven by pytest, inspect-ai, sklearn. |
+
+### The typed solver-scorer contract
+
+Solvers and scorers communicate through `state.store`, which is an
+untyped dict by default. Caliper defines `caliper.protocols.SolverState`
+(a Pydantic-backed `StoreModel`) as the **single source of truth** for
+what a solver writes and what scorers read. Both sides access fields
+via `state.store_as(SolverState)`:
+
+```python
+# In a solver
+async def solve(state, generate):
+    ss = state.store_as(SolverState)
+    ss.agent_answer = "..."
+    ss.observed_page = True
+    ss.commands_run += 1
+
+# In a scorer
+async def score(state, target):
+    ss = state.store_as(SolverState)
+    return Score(value=bool(ss.agent_answer), explanation=...)
+```
+
+This makes the contract enforceable by type. A solver that forgets to
+set `agent_answer` produces a default empty string, not a `KeyError`,
+and the scorer's expectation is documented in the protocol. Renaming a
+field is a single-file change.
+
+### The Strategy axis
+
+`caliper.protocols.Strategy` is a `Protocol` class that defines the
+hooks an agent loop calls at decision points that aren't "what tool to
+call next" — for example, what to do when the turn budget is exhausted.
+
+Caliper core provides only the protocol. Concrete strategies live in
+scenario packages — the chatbot maxTurns scenario is the canonical
+first user (`caliper-chatbot/strategies/`), but any future scenario
+that needs meta-policies (retry strategies, temperature schedules,
+budget allocation) implements the same protocol so reports and A/B
+tooling work uniformly across them.
+
+This is the answer to the recurring question "where does X live in
+caliper?" — protocols in core, implementations in scenarios.
