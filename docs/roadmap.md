@@ -151,15 +151,28 @@ columns we couldn't produce before.
   wiring" for the bugs caught (deferred judge model resolution,
   setuptools package_data, file split).
 
-- [ ] **M1.8** GitHub Actions CI (~30 min, NEXT)
+- [x] **M1.8** GitHub Actions CI (2026-04-08)
 
-  Pre-requisite for M1.4 onward. A failing test in any of the 124
-  current tests should block any PR; right now nothing does.
+  Pre-requisite for M1.4 onward. The 124 unit tests now run on
+  every push to main and every pull request, across a 6-cell
+  matrix (ubuntu-latest + macos-latest × Python 3.11/3.12/3.13).
+  Plus `ruff check .` as a lint gate.
 
-  - `.github/workflows/ci.yml`: matrix on python 3.11/3.12/3.13,
-    `uv sync && uv run pytest packages/ -q && uv run ruff check`
-  - **Done when**: a deliberately broken test in a draft PR fails
-    the workflow; the workflow runs in <2 minutes
+  Workflow: `.github/workflows/ci.yml` (~50 lines).
+
+  Phase R's macOS Sequoia `.pth hidden flag` landmine drove the
+  decision to include macOS in the matrix from day one — Linux-only
+  CI would have missed that class of bug.
+
+  Ruff baseline turned out clean: only 3 unused-import warnings,
+  all auto-fixable, no custom config needed.
+
+  First push (commit `9ff95ca`) failed because the root pyproject
+  uses PEP 735 `[dependency-groups]` instead of
+  `[project.optional-dependencies]`, so `uv sync --extra dev` was
+  rejected. Fixed in `9ac1a2f` with `--group dev`. Second run:
+  6/6 cells green in 32 seconds. See
+  https://github.com/relixiaobo/caliper/actions for current status.
 
 - [ ] **M1.4** Bucket report (Python API only; CLI in M1.5)
 
