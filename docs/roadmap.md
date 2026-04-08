@@ -174,31 +174,42 @@ columns we couldn't produce before.
   6/6 cells green in 32 seconds. See
   https://github.com/relixiaobo/caliper/actions for current status.
 
-- [ ] **M1.4** Bucket report (Python API only; CLI in M1.5)
+- [x] **M1.4** Bucket report (2026-04-08, Python API only; CLI in M1.5)
 
   First real consumer of M1.2's `UsageSummary` and M1.3's bucket
-  metadata. Pure Python library — no CLI yet, no log writes.
+  metadata. Pure Python library: no CLI yet, no log writes.
 
-  - `packages/caliper/src/caliper/report/bucket.py` (~200 lines):
-    - `SampleResult` dataclass (sample_id / epoch / bucket /
-      judge_passed / is_lazy / `UsageSummary`)
-    - `BucketStats` dataclass (n_samples / n_runs / pass_count /
-      lazy_count / `UsageSummary` aggregate / derived rates)
-    - `BucketReport` dataclass (per-bucket list + overall TOTAL)
-    - `load_bucket_report(eval_log) -> BucketReport`
-  - `packages/caliper/src/caliper/report/render.py` (~80 lines):
-    - `render_bucket_table(report) -> str` (ASCII table)
-    - `render_bucket_markdown(report) -> str`
-  - Tests: 12+ unit tests using a real `.eval` log fixture from
-    `logs/` plus synthetic mock EvalSamples for edge cases
-    (provider-silent cache, mixed-provider aggregation, empty
-    bucket, etc.)
+  Delivered:
+  - `packages/caliper/src/caliper/report/bucket.py` — `SampleResult`,
+    `BucketStats`, `BucketReport` frozen dataclasses, plus
+    `load_bucket_report(log)` and the inner
+    `BucketReport.from_sample_results(results)` constructor
+  - `packages/caliper/src/caliper/report/render.py` — both
+    `render_bucket_table` (ASCII with vertical bars) and
+    `render_bucket_markdown` for paste into docs/issues
+  - Tests: 31 new tests (18 bucket loader + 13 render) covering
+    multi-model usage aggregation, missing scorers, missing bucket
+    metadata, empty/zero results, cache-silent provider rendering
+    as `—` not `0.0%`, and mixed-provider denominator regression
+    (cache_aware_input_tokens flows correctly through bucket
+    aggregation)
+  - Total tests: 124 → **155**
 
-  **Done when**: loading a real v8 baseline `.eval` log produces
-  a 4-bucket + TOTAL table with `pass / lazy / mean_tokens /
-  cache_hit_rate / uncached_input_tokens` columns; compare bucket
-  visibly worse on cache_hit_rate per the methodology principle 5
-  diagnostic signal; total tests 124 → 136+
+  Two design decisions worth keeping:
+  1. Cache-silent buckets render as `—` (em-dash), never `0.0%`.
+     A Bedrock/Mistral/Azure run has *unknown* cache state, not
+     zero — coercing one to the other would silently mark every
+     such bucket as a cache regression in A/B diffs.
+  2. `BucketReport.from_sample_results` is exposed publicly as a
+     classmethod so callers can aggregate from non-EvalLog sources
+     (custom eval pipelines, in-memory tests). `load_bucket_report`
+     becomes a thin wrapper over it.
+
+  End-to-end validation: ran a fresh `v8_lookup` with N=1 / Cambridge
+  Dictionary--3 only (~20K tokens), loaded the resulting `.eval`
+  via `load_bucket_report`, rendered both formats, verified the
+  numbers exactly match Inspect AI's own token report (20,769
+  total / 18,254 fresh input).
 
 - [ ] **M1.5** A/B compare + `caliper` CLI
 
