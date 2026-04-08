@@ -188,14 +188,71 @@ cost-aware report we couldn't produce before.
     no commands. This is exactly the kind of measurement-layer bug
     methodology principle 1 exists to catch.
 
-- [ ] **M1.2** Cost wrapper
-  - `src/caliper/metrics/pricing.py` with per-model pricing table
-    (Sonnet, Haiku, GPT-5.4, etc., dated 2026-01)
-  - `src/caliper/metrics/cost.py` with `cost_usd()` function reading
-    Inspect AI's I/CW/CR/O fields
-  - `src/caliper/scorers/cost_tracker.py` exposing cost as a metric
-  - **Done when**: A run reports `$ per run`, `cache_hit_rate`, and
-    `effective_tokens`
+- [x] **M1.2** Token-usage observability (2026-04-08)
+
+  **Re-scoped from the original "cost wrapper" after deep research into
+  Inspect AI 0.3.205's cross-provider ``ModelUsage`` support.** The
+  original plan (pricing table + `cost_usd()` scorer + `$ per run`
+  metric) was dropped for three reasons:
+
+  1. **Inspect AI ships zero cost data.** `ModelUsage.total_cost`,
+     `ModelCost` schema, and `compute_model_cost()` all exist, but the
+     bundled YAML files for anthropic/openai/google/grok/together/
+     mistral/deepseek have **zero `cost:` entries**. Every provider
+     returns `total_cost=None` in 0.3.205, so there is nothing for
+     caliper to "prefer upstream" against — caliper would have to
+     duplicate a pricing table it can't keep in sync.
+  2. **Same-model iteration doesn't need dollars.** The iteration loop
+     caliper supports (SKILL.md / solver tuning) holds the model
+     fixed, so fewer tokens at the same model is strictly cheaper.
+     The user clarified the real goal is token observability and
+     cache-hit-rate control, not dollar comparison.
+  3. **No universal "effective tokens" formula exists.** Different
+     providers have different cache pricing ratios (Anthropic cache
+     write=1.25×, cache read=0.1×; OpenAI has no cache write, read≈0.5×;
+     Gemini caches differently), so any single-number synthetic
+     metric would be silently wrong for somebody.
+
+  **What M1.2 actually delivered:**
+  - `packages/caliper/src/caliper/metrics/usage.py` — one frozen
+    `UsageSummary` dataclass with normalised token fields, honesty
+    flags (`has_cache_info`, `has_reasoning_info`), and derived
+    properties (`total_input_tokens`, `total_tokens`,
+    `uncached_input_tokens`, `cache_hit_rate: float | None`). Also
+    `__add__` for bucket aggregation and `zero()` as the additive
+    identity.
+  - `packages/caliper/src/caliper/metrics/__init__.py` exports it.
+  - `packages/caliper/tests/unit/test_metrics_usage.py` — 17 tests
+    covering the five realistic provider patterns (Anthropic full,
+    OpenAI Chat, Bedrock bare, Gemini reasoning-only, Mistral basic),
+    the critical `cache_hit_rate is None vs 0.0` distinction, and
+    `__add__` aggregation with honesty-flag OR semantics.
+
+  **What M1.2 deliberately did NOT do** (all deferred to later):
+  - No pricing table, no `cost_usd()`, no `$` field anywhere
+  - No `cost_tracker` scorer — the raw `ModelUsage` is already in
+    the `.eval` log via `EvalSample.model_usage`, so derived cost
+    would be data duplication. Report layer (M1.4) is the first
+    real consumer.
+  - No `effective_tokens` single-number metric — report layer can
+    add provider-aware weights if ever needed.
+  - No changes to solver, scorer, example, or solver state. M1.2 is
+    pure library code.
+  - No changes to the `.eval` log. Cost/usage analysis is read-time
+    derivation only.
+
+  **Provider coverage verified by source reading:** Anthropic direct,
+  OpenAI Chat Completions, OpenAI Responses (gpt-5), Google Gemini,
+  Bedrock, Grok, Perplexity, Azure, Mistral, Groq, Together, HF local,
+  MockLLM, and the 7 openai-compatible providers (Cloudflare,
+  Fireworks, OpenRouter, Ollama, vLLM, SambaNova, SGLang). Only
+  Anthropic direct populates `input_tokens_cache_write`; everywhere
+  else it is `None` and `has_cache_info` degrades accordingly.
+
+  **Done when:** ✓ 86/86 tests pass (69 → 86, +17 for M1.2);
+  ✓ integration check on real cambridge_smoke `.eval` log loads
+  `sample.model_usage` entries and produces sensible `UsageSummary`
+  with correct `has_cache_info` / `cache_hit_rate` values.
 
 - [ ] **M1.3** Twelve v8 tasks ported
   - `examples/browser_pilot_v8/data.jsonl` — 12 curated tasks with bucket
