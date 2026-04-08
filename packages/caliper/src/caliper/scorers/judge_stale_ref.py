@@ -75,8 +75,19 @@ def judge_stale_ref(model: str = "anthropic/claude-sonnet-4-6") -> Scorer:
     (set by the solver), the goal from ``state.input_text``, and the
     reference from ``target.text``. Calls the configured judge model with
     ``temperature=0`` and the minimal evaluator system prompt.
+
+    The judge model is **resolved lazily on the first call** to
+    ``score()`` rather than at scorer-factory time. This is the
+    Codex M1.3 P1 fix: calling ``get_model(...)`` at factory time
+    initialises the provider client (which checks API keys) and
+    raised ``PrerequisiteError`` whenever a Task was constructed in
+    a credential-free environment, even if no eval was actually
+    being run. Constructing a Task definition (in CI / unit tests
+    / a bare machine) must NOT require API credentials. Inspect AI
+    caches model instances, so the per-call lookup is effectively
+    free after the first invocation.
     """
-    judge_model = get_model(model, config=GenerateConfig(temperature=0))
+    judge_config = GenerateConfig(temperature=0)
 
     async def score(state, target: Target) -> Score:
         ss = state.store_as(SolverState)
@@ -87,6 +98,10 @@ def judge_stale_ref(model: str = "anthropic/claude-sonnet-4-6") -> Scorer:
                 answer="",
                 explanation="empty agent answer (no ANSWER: block extracted)",
             )
+
+        # Lazy model resolution. get_model() caches internally, so
+        # subsequent calls within the same eval are free.
+        judge_model = get_model(model, config=judge_config)
 
         prompt = build_judge_prompt(
             goal=state.input_text,

@@ -254,13 +254,64 @@ cost-aware report we couldn't produce before.
   `sample.model_usage` entries and produces sensible `UsageSummary`
   with correct `has_cache_info` / `cache_hit_rate` values.
 
-- [ ] **M1.3** Twelve v8 tasks ported
-  - `examples/browser_pilot_v8/data.jsonl` — 12 curated tasks with bucket
-    metadata, sourced from
-    [`reference/curated-tasks.md`](reference/curated-tasks.md)
-  - `examples/browser_pilot_v8/tasks.py` — `@task` definition
-  - **Done when**: `inspect eval examples/browser_pilot_v8/tasks.py
-    --epochs 2` runs all 24 samples
+- [x] **M1.3** Twelve v8 tasks ported (2026-04-08)
+
+  Landed in the workspace layout from Phase R rather than the original
+  ``examples/browser_pilot_v8/`` location, because Phase R established
+  ``packages/caliper-browser-pilot/`` as the home for bp-specific
+  tasks and data.
+
+  **Generic loader (caliper core):**
+  - `packages/caliper/src/caliper/datasets/webvoyager.py` —
+    `load_webvoyager_jsonl(path)` and `filter_by_bucket(dataset, bucket)`.
+    Reads WebVoyager-shaped JSONL records, validates metadata via
+    `caliper.protocols.validate_task_metadata` (raises on missing
+    required keys, soft-warns on unknown). Same loader will read the
+    full 643-task WebVoyager source in Phase 2 / Layer 3.
+
+  **bp adapter data + tasks:**
+  - `packages/caliper-browser-pilot/src/caliper_browser_pilot/data/v8_curated.jsonl`
+    — 12 hand-curated WebVoyager tasks (3 lookup + 3 search + 3 compare
+    + 3 navigate), sourced verbatim from
+    [`reference/curated-tasks.md`](reference/curated-tasks.md). Lives
+    inside the package so `Path(__file__).parent.parent / "data"`
+    resolves it from any cwd.
+  - `packages/caliper-browser-pilot/src/caliper_browser_pilot/tasks/v8_baseline.py`
+    — five `@task` definitions:
+      - `v8_baseline()` — all 12 tasks (the M1.6 baseline)
+      - `v8_lookup()` / `v8_search()` / `v8_compare()` / `v8_navigate()`
+        — bucket-specific subsets for fast debug iteration
+    All wire `bp_agent + judge_stale_ref + lazy_detection` with
+    `epochs=2` default (methodology principle 2).
+
+  **Tests (24 new, total 121/121 passing):**
+  - `packages/caliper/tests/unit/test_datasets_webvoyager.py` (14 tests)
+    — loads the real v8_curated.jsonl and verifies bucket distribution,
+    metadata completeness, validation policy on missing/unknown keys,
+    blank lines, file-not-found, dataset naming.
+  - `packages/caliper-browser-pilot/tests/test_v8_baseline_tasks.py`
+    (10 tests) — constructs all 5 @task fixtures, verifies sample
+    counts, bucket membership (especially that Apple--3 stays in
+    compare so the canary task isn't accidentally relocated),
+    epochs default, and the bucket-task partition property.
+
+  **End-to-end smoke validation (not full baseline):**
+  ```
+  inspect eval packages/caliper-browser-pilot/.../v8_baseline.py@v8_lookup \
+      --model anthropic/claude-sonnet-4-6 --epochs 1 --limit 1
+  ```
+  → Cambridge Dictionary--3 runs through the full pipeline:
+  judge_pass=True, lazy=False, 10.6K tokens, ~30s.
+
+  **What M1.3 deliberately did NOT do:**
+  - Did NOT run the full 24-sample baseline against the v8 anchors
+    — that's M1.6 (`v9 baseline produced`), which compares against
+    `docs/reference/baseline-v8.md`.
+  - Did NOT add the 4 heroku smoke tasks — that's M1.7.
+  - Did NOT score on `reference_type` (golden vs possible) —
+    `judge_stale_ref` already handles substance-not-wording matching;
+    if exact-match scoring for golden refs is ever needed, it lands
+    as a separate scorer in Phase 2.
 
 - [ ] **M1.4** Bucket report
   - `src/caliper/report/bucket.py` reads `.eval` log files, aggregates by

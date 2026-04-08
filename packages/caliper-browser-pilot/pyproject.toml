@@ -18,3 +18,12 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Include the v8 curated WebVoyager subset (and any future JSONL data
+# files) in built wheels and sdists. Without this, setuptools only
+# packages .py files, and ``Path(__file__).parent.parent / "data"``
+# in v8_baseline.py raises FileNotFoundError when caliper-browser-pilot
+# is installed from a wheel rather than as an editable source checkout.
+# Codex M1.3 P2 fix.
+[tool.setuptools.package-data]
+caliper_browser_pilot = ["data/*.jsonl"]

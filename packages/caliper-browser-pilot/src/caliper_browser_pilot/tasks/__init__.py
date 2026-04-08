@@ -1,11 +1,32 @@
 """Browser-pilot task definitions.
 
-**Status: empty.** Lands in roadmap milestones M1.3 (12 v8 curated tasks)
-and M1.7 (4 heroku smoke tasks).
+The 12 v8 curated WebVoyager tasks land in two files:
 
-Planned modules:
-    v8_baseline.py  — @task wrapping the 12 curated WebVoyager tasks
-    smoke.py        — @task wrapping the 4 heroku smoke tasks (Layer 1)
+- ``v8_baseline.py`` — exactly one ``@task``: the full 12-task baseline.
+- ``v8_buckets.py``  — four ``@task``: one per bucket (lookup / search /
+  compare / navigate). Use these for fast debug iteration on a single
+  failure mode.
 
-The actual data files live in ``../data/``.
+The split exists so ``inspect eval .../v8_baseline.py`` (without an
+``@`` selector) runs exactly the baseline and not also the bucket
+helpers, which would double-count samples. See the Codex M1.3 P2
+fix for the rationale.
+
+The 4 heroku smoke tasks land in ``smoke.py`` (M1.7, Layer 1).
 """
+
+from caliper_browser_pilot.tasks.v8_baseline import v8_baseline
+from caliper_browser_pilot.tasks.v8_buckets import (
+    v8_compare,
+    v8_lookup,
+    v8_navigate,
+    v8_search,
+)
+
+__all__ = [
+    "v8_baseline",
+    "v8_lookup",
+    "v8_search",
+    "v8_compare",
+    "v8_navigate",
+]
