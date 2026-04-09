@@ -38,57 +38,125 @@ adds the remaining 20% — the parts that enforce the methodology in
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## Two integration modes
+
+Caliper supports two ways for agent projects to use its measurement layer.
+Both share the same scoring logic (via ``caliper.scoring``):
+
+```
+Mode A: Full mode (Inspect AI eval loop)
+  inspect eval → Task → bp_agent solver → scorers → BucketReport
+
+Mode B: Measurement-only mode (standalone API)
+  any agent → CaliperRecord → CaliperEvaluator.evaluate() → BucketReport
+  any agent → JSON file → caliper score records.json → report
+```
+
+**Mode A** is the original design and is best for caliper-native projects.
+Your project defines ``@task`` functions and runs via ``inspect eval``.
+
+**Mode B** was added in Phase 1 close to support external projects that
+have their own agent loop. The key abstraction is ``CaliperRecord`` — a
+simple dataclass that any framework can produce. The project decides what
+tasks to evaluate and what "correct" means; caliper provides the standard
+measurement methodology.
+
+### CaliperRecord — the universal data contract
+
+```python
+from caliper import CaliperRecord, CaliperEvaluator
+
+records = [
+    CaliperRecord(
+        sample_id="task-1",
+        bucket="lookup",               # project-defined category
+        goal="What is the derivative of x^2 at x=5.6?",
+        agent_answer="11.2",           # agent's final answer
+        observed=True,                  # agent actually looked at the target
+        reference_answer="11.2",        # optional: for LLM judge
+        input_tokens=50000,             # optional: for token metrics
+        output_tokens=3000,
+    ),
+]
+
+evaluator = CaliperEvaluator(judge_model="anthropic/claude-sonnet-4-6")
+report = await evaluator.evaluate(records)
+```
+
+Required fields (enforce methodology at the type level):
+- ``sample_id`` — per-sample failure attribution
+- ``bucket`` — per-group aggregation
+- ``goal`` — task description (fed to LLM judge)
+- ``agent_answer`` — empty = explicit failure
+- ``observed`` — mandatory for lazy detection
+
+Optional fields: ``reference_answer`` (for LLM judge), ``verify_specs``
+/ ``verify_results`` (for deterministic verification), token usage,
+``commands_run``, ``epoch``, ``metadata``.
+
 ## What lives where
 
 ### Inspect AI provides (we don't write)
 
-- The agent loop infrastructure
+- The agent loop infrastructure (Mode A only)
 - Multi-provider model client with cache token reporting
 - Sandboxed tool execution
 - Sample/Dataset abstractions
 - Eval orchestration and parallelism
 - The web viewer for trace inspection
 
-### Caliper provides (the ~500 lines we write)
+### Caliper provides (~1,200 lines Python as of Phase 1 close)
 
-- **Scorers** that encode the methodology:
-  - `judge_stale_ref_tolerant` — judge with anti-substring-bug parsing and
-    stale-reference handling for time-sensitive tasks
-  - `lazy_detection` — observation-based check that catches "describe but
-    don't do" agent cheating
-  - `json_verdict` — robust JSON verdict parser, handles markdown fences,
-    falls back to keyword matching with INCORRECT-first ordering
-  - `cost_threshold` — flag runs that exceed a $ budget
+- **Data contract**: ``CaliperRecord`` — the universal interface between
+  any agent system and caliper's measurement layer
+- **Scoring kernel** (``caliper.scoring``): pure functions independent
+  of Inspect AI:
+  - ``score_lazy(answer, observed)`` — catches "answered without looking"
+  - ``score_judge(goal, answer, ref, model)`` — LLM judge with stale-ref
+    tolerance and structured JSON verdict parsing
+  - ``score_verify(specs_or_results)`` — deterministic post-hoc checks
+  - ``build_judge_prompt`` / ``parse_judge_verdict`` — shared prompt + parser
+- **Inspect AI scorers** (``caliper.scorers``): thin wrappers that bridge
+  ``TaskState`` to the pure scoring kernel:
+  - ``judge_stale_ref`` — calls ``score_judge`` internally
+  - ``lazy_detection`` — calls ``score_lazy`` internally
+  - ``verify_commands`` — calls ``score_verify`` internally
 - **Solvers** for non-standard agent loops:
-  - `text_protocol_agent` — wraps a CLI tool, parses commands from LLM free
-    text, suitable for any subprocess-based tool
-- **Metrics**:
-  - `cost_calculator` — converts Inspect AI's I/CW/CR/O fields to $ using
-    a pinned-date pricing table
-  - `cache_hit_rate` — first-class metric on top of token breakdown
-  - `effective_tokens` — single-number cost comparison across configs with
-    different cache patterns
+  - ``text_protocol_agent`` — wraps a CLI tool, parses commands from LLM
+    free text. Supports ``session_prologue`` for per-sample state reset.
+- **Metrics**: ``UsageSummary`` — cross-provider token normalisation with
+  ``cache_hit_rate`` and honesty flags (``has_cache_info``,
+  ``has_reasoning_info``)
 - **Report layer**:
-  - `bucket_report` — aggregate by `metadata.bucket` for per-category metrics
-  - `ab_compare` — diff two `.eval` log files, flag noise-floor regressions
-  - `regression_check` — for CI: refuse to merge if a baseline metric drops
-    by more than the noise floor
-- **Datasets**:
-  - `webvoyager_loader` — convert WebVoyager JSONL to Inspect Samples with
-    metadata bucket tags
+  - ``BucketReport`` — aggregate by ``metadata.bucket``
+  - ``ABDiff`` — diff two reports with 2σ noise floor
+  - ``render_bucket_table`` / ``render_ab_diff`` — ASCII table output
+- **Public API**: ``CaliperEvaluator`` — one-liner: records → report
+- **CLI**:
+  - ``caliper report <log.eval>`` — bucket table from Inspect AI log
+  - ``caliper diff <base.eval> <cand.eval>`` — A/B comparison
+  - ``caliper score <records.json>`` — evaluate CaliperRecords from JSON
+- **Datasets**: ``load_webvoyager_jsonl`` — JSONL → Inspect Samples with
+  bucket tags
 
-## What consumers provide
+### What consumers provide
 
-A consumer project (like `browser-pilot/eval/`) writes:
+**Mode A** (Inspect AI full mode): a ``@task`` function + dataset + adapter
+code (e.g. ``bp_agent()`` factory). Everything else comes from the stack.
 
-1. A **task definition** (`@task` function) that wires together a solver, a
-   scorer, and a dataset.
-2. A **dataset** of `Sample` objects (`input`, `target`, `metadata`).
-3. Project-specific **adapter code** if the tool isn't already wrapped by
-   one of caliper's solvers.
+**Mode B** (measurement-only): a list of ``CaliperRecord`` objects. The
+project runs its own agent loop and constructs records from the output.
+caliper handles scoring, aggregation, and reporting.
 
-That's it. Everything else — the agent loop, the LLM calls, the cache
-tracking, the variance enforcement, the report — comes from the stack below.
+### Adapter packages (planned to move — see roadmap M3.0)
+
+Currently adapter packages (``caliper-browser-pilot``,
+``caliper-computer-pilot``, ``caliper-chatbot``) live in caliper's
+monorepo workspace at ``packages/``. This is a temporary development
+convenience. After Phase 2 stabilises the core API, adapters will move
+to their respective agent project repos (see roadmap M3.0: Adapter
+Repository Split), and caliper's repo will contain only the core
+framework.
 
 ## Two example use cases
 

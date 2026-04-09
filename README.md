@@ -2,10 +2,15 @@
 
 > Evidence-based iteration for agent stacks.
 
-Caliper is a thin layer on top of [Inspect AI](https://inspect.aisi.org.uk/)
-that adds the discipline you actually need when iterating on an agent system:
-variance measurement, judge anti-bug parsing, lazy-behavior detection, cost &
-cache tracking, and bucketed A/B comparison.
+Caliper is a measurement layer for agent evaluation. It provides the
+discipline you need when iterating on an agent system: variance measurement,
+LLM judge with anti-bug parsing, lazy-behavior detection, token & cache
+tracking, deterministic post-hoc verification, and bucketed A/B comparison
+with statistical rigor.
+
+**Any agent project can plug into caliper** — either via the Inspect AI eval
+loop (full mode) or via the standalone `CaliperRecord` API (measurement-only
+mode). Both modes share the same scoring logic.
 
 ## Why does this exist
 
@@ -23,50 +28,118 @@ biggest wins came from finding bugs in *how we measured*, not in how we built.
 Caliper bakes those measurement-discipline lessons into a reusable framework so
 you don't have to rediscover them.
 
+## Two ways to integrate
+
+### Mode A: Full mode (Inspect AI eval loop)
+
+Your project defines tasks and runs via `inspect eval`:
+
+```python
+from caliper.solvers import text_protocol_agent
+from caliper.scorers import judge_stale_ref, lazy_detection
+
+@task
+def my_eval():
+    return Task(
+        dataset=my_dataset(),
+        solver=text_protocol_agent(cli_name="my-tool", ...),
+        scorer=[judge_stale_ref(), lazy_detection()],
+    )
+```
+
+```bash
+inspect eval tasks.py@my_eval --model anthropic/claude-sonnet-4-6
+caliper report logs/latest.eval
+```
+
+### Mode B: Measurement-only mode (standalone API)
+
+Your project runs its own agent loop and feeds results to caliper:
+
+```python
+from caliper import CaliperEvaluator, CaliperRecord
+
+evaluator = CaliperEvaluator(judge_model="anthropic/claude-sonnet-4-6")
+
+records = [
+    CaliperRecord(
+        sample_id="task-1",
+        bucket="lookup",
+        goal="What is the derivative of x^2 at x=5.6?",
+        agent_answer="11.2",
+        observed=True,
+        reference_answer="11.2",
+    ),
+]
+
+report = await evaluator.evaluate(records)
+print(report.overall.pass_rate)
+```
+
+Or via CLI (any language can produce the JSON):
+
+```bash
+caliper score records.json --output report.json
+```
+
 ## What it gives you
 
-- **Structured judge** with anti-substring-bug JSON parsing
-- **Lazy detection**: catches "describe-don't-do" agent cheating
-- **Stale-reference tolerance** for time-sensitive benchmark answers
-- **Cost & cache tracking** with per-model pricing tables
-- **Variance measurement** with N≥2 enforced as default
-- **Bucketed reporting** so model strengths/weaknesses are visible per task category
-- **A/B comparison** between configs with noise-floor analysis
+- **Structured LLM judge** with anti-substring-bug JSON parsing and
+  stale-reference tolerance for time-sensitive benchmarks
+- **Lazy detection**: catches agents that answer from training data without
+  looking at the target
+- **Deterministic verification** (`verify_commands`): post-hoc DOM/CLI checks
+  for Layer 1 smoke tests — no LLM judge needed, fast and free
+- **Token & cache tracking**: cross-provider `UsageSummary` with
+  `cache_hit_rate` and honesty flags
+- **Variance measurement**: N≥2 enforced; diff refuses to call a delta "real"
+  at N=1
+- **Bucketed reporting**: per-task-category pass/lazy/tokens breakdown
+- **A/B comparison**: 2σ noise floor, cache regression warnings
+- **Session hygiene**: `session_prologue` resets tool state between samples
+  (e.g. bp disconnect/connect to prevent Chrome tab pollution)
 - **Self-evaluation**: caliper's own components are tested with caliper
 
 ## What it doesn't do
 
-- It's **not an agent framework** (use Inspect AI / smolagents / LangChain for that)
-- It's **not a benchmark dataset** (it works with WebVoyager, your own tasks, mock tasks)
+- It's **not an agent framework** (use Inspect AI / LangChain / CrewAI for that)
+- It's **not a benchmark dataset** (it works with WebVoyager, your own tasks,
+  deterministic fixtures, mock tasks)
 - It's **not a model provider** (Inspect AI handles that)
 
 ## Status
 
-**Phase 1 — M1.1 complete + workspace restructure** (current).
+**Phase 1 complete** (M0.1 → M1.7b). Phase 2 (self-eval) in progress.
 
-Caliper is a **uv workspace** containing four sibling Python packages:
+| Metric | Value |
+|---|---|
+| Core production code | ~1,200 lines |
+| Tests | 243 passing |
+| Scorers | 3 (judge_stale_ref, lazy_detection, verify_commands) |
+| CLI commands | 3 (report, diff, score) |
+| Integration modes | 2 (Inspect AI full mode + CaliperRecord standalone) |
+| v9 baseline | 19/24 Sonnet, with 4-round post-mortem correction chain |
+
+Current workspace structure (adapters planned to move to their own repos
+after Phase 2 — see [roadmap M3.0](docs/roadmap.md)):
 
 | Package | Role | Status |
 |---|---|---|
-| `caliper` | Core framework — protocols, parsers, scorers, generic solvers | M1.1 complete |
-| `caliper-browser-pilot` | Adapter for the `bp` CLI (browser-pilot v8 baseline) | bp_agent done; 12 tasks land in M1.3 |
-| `caliper-computer-pilot` | Adapter for the `cu` CLI (computer-pilot) | Skeleton; implementation in Phase 3a |
-| `caliper-chatbot` | Scenario package for chatbot maxTurns A/B (1500 lines, 9 strategies) | Skeleton; implementation in Phase 3b. Full design in [`docs/chatbot-maxturns.md`](docs/chatbot-maxturns.md) |
-
-See [docs/roadmap.md](docs/roadmap.md) for the milestone plan and
-[docs/architecture.md](docs/architecture.md#workspace-layout--single-git-repo-multiple-python-packages)
-for the workspace contract.
+| `caliper` | Core framework — scoring, evaluator, protocols, parsers, solvers, metrics, report, CLI | Phase 1 complete |
+| `caliper-browser-pilot` | Adapter for the `bp` CLI | Phase 1 complete; 4 smoke + 12 v8 tasks |
+| `caliper-computer-pilot` | Adapter for the `cu` CLI | Skeleton; Phase 3a |
+| `caliper-chatbot` | Scenario for chatbot maxTurns A/B | Skeleton; Phase 3b |
 
 ## Quick links
 
 - [Why this exists](docs/why.md) — the case for evidence-based iteration
 - [Methodology](docs/methodology.md) — the 5 core principles
-- [Architecture](docs/architecture.md) — how it composes with Inspect AI
-- [Test sets](docs/test-sets.md) — where tasks come from, how to vet them, the 5-layer strategy
+- [Architecture](docs/architecture.md) — two integration modes, what lives where
+- [Roadmap](docs/roadmap.md) — phases, milestones, adapter split plan
+- [Lessons learned](docs/lessons-learned.md) — the 8-week story + Phase 1 post-mortems
+- [Test sets](docs/test-sets.md) — where tasks come from, the 3-layer strategy
 - [Self-evaluation](docs/self-evaluation.md) — how caliper tests itself
-- [Lessons learned](docs/lessons-learned.md) — the 8-week story
-- [Chatbot maxTurns scenario](docs/chatbot-maxturns.md) — the second worked example: termination-strategy A/B
-- [Roadmap](docs/roadmap.md) — phases, milestones, effects tracking
+- [Chatbot maxTurns scenario](docs/chatbot-maxturns.md) — the worked Phase 3b example
 
 ## License
 

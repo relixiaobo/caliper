@@ -759,11 +759,111 @@ enforced in CI, and at least one independent run has confirmed
 
 ---
 
+## Adapter Repository Split (between Phase 2 and Phase 3)
+
+**Goal**: Move adapter packages out of the caliper monorepo into
+their respective agent project repos, making caliper core a clean,
+pip-installable framework with zero agent-specific code.
+
+**Why this matters**: Currently `caliper-browser-pilot` (task
+definitions, baseline data, adapter code) lives inside caliper's
+workspace at `packages/caliper-browser-pilot/`. This was a
+deliberate Phase 1 decision — during rapid iteration, having core
+and adapter in the same repo made cross-package changes easy.
+But it means:
+
+- caliper's repo contains browser-pilot-specific data and tasks
+- External users cloning caliper see bp-specific code everywhere
+- caliper can't be `pip install caliper` from PyPI without
+  carrying adapter baggage
+- Each new agent project (computer-pilot, chatbot) would add
+  more agent-specific code to caliper's repo
+
+The CaliperRecord API (completed in Phase 1) already decoupled
+the core from any specific adapter — `caliper.scoring`,
+`CaliperEvaluator`, and `caliper score` CLI don't import anything
+from `caliper_browser_pilot`. The adapter split is the natural
+next step: physically move adapter code to where it belongs.
+
+**Trigger**: Execute after Phase 2 self-eval is complete (M2.1
+through M2.6 are `[x]`). Phase 2 will stabilise caliper core's
+API surface; splitting before that would cause expensive
+cross-repo coordination on every API change.
+
+**Do NOT start this before the trigger**. The current monorepo
+setup is working fine for development. Premature splitting
+increases friction without benefit.
+
+### M3.0 — Execute the split
+
+Steps:
+
+1. **Publish `caliper` to PyPI** (or a private index):
+   - Remove adapter packages from the uv workspace
+   - Verify `pip install caliper` provides `caliper.scoring`,
+     `CaliperEvaluator`, `caliper score` CLI, all scorers, all
+     report tools — with zero reference to any specific agent
+   - Pin the version (v0.1.0 or whatever Phase 2 lands on)
+
+2. **Move `caliper-browser-pilot` to browser-pilot repo**:
+   - `packages/caliper-browser-pilot/` → `browser-pilot/eval/caliper_browser_pilot/`
+   - `baselines/v9.json` → `browser-pilot/eval/baselines/v9.json`
+   - `baselines/build_v9.py` → `browser-pilot/eval/baselines/build_v9.py`
+   - browser-pilot's `pyproject.toml` adds `caliper` as a pip
+     dependency (not a workspace sibling)
+   - `tests/agent/run.py` shim now points at the local
+     `eval/` directory instead of a CALIPER_ROOT env var
+   - Update browser-pilot CI to `pip install caliper` then run
+     `inspect eval eval/caliper_browser_pilot/tasks/smoke.py@heroku_smoke`
+
+3. **Phase 3 adapters start in their own repos from day one**:
+   - `caliper-computer-pilot` lives in the computer-pilot repo
+   - `caliper-chatbot` lives in the chatbot repo (or a new repo)
+   - Each adds `caliper` as a dependency, NOT as a workspace sibling
+   - caliper core's success criterion: "adapter works without any
+     change to caliper" (already the Phase 3 success criterion)
+
+4. **caliper repo cleanup**:
+   - Remove `packages/caliper-browser-pilot/` (git history preserves it)
+   - Remove `packages/caliper-computer-pilot/` skeleton
+   - Remove `packages/caliper-chatbot/` skeleton
+   - Remove `baselines/` (moved to browser-pilot)
+   - Update docs to reflect the new structure
+   - The caliper repo becomes:
+     ```
+     caliper/
+       packages/caliper/     ← the only package
+       docs/                 ← methodology, architecture, etc.
+       examples/             ← minimal examples (echo-based, not bp-specific)
+       tests/                ← caliper core tests only
+     ```
+
+5. **Verify the split didn't break anything**:
+   - caliper's CI: all core tests pass, no adapter imports
+   - browser-pilot's CI: `npm run test:agent` passes via
+     pip-installed caliper
+   - A new minimal example project can `pip install caliper`,
+     construct `CaliperRecord` objects, and get a report —
+     without cloning the caliper repo
+
+**Done when**: `pip install caliper` works on a fresh machine,
+browser-pilot's `npm run test:agent` passes with pip-installed
+caliper (not a workspace sibling), and the caliper repo contains
+zero lines of agent-specific code.
+
+**Estimated effort**: ~1 day for the mechanical split + CI updates.
+The hard part is ensuring version compatibility — caliper core's
+API must be stable (which is why we wait for Phase 2).
+
+---
+
 ## Phase 3 — Second + third scenarios *(parallel with Phase 2)*
 
 **Goal**: Validate that caliper's abstractions are general by
 populating both the `caliper-computer-pilot` and `caliper-chatbot`
-workspace packages with real implementations.
+adapter packages with real implementations. **After the M3.0
+adapter split, these packages live in their respective agent
+repos, not in caliper's monorepo.**
 
 **Success criterion**: Both adapter packages produce real numbers
 without requiring any change to `caliper` core. If core needs a
