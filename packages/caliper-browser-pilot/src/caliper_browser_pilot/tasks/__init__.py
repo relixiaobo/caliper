@@ -12,9 +12,10 @@ The split exists so ``inspect eval .../v8_baseline.py`` (without an
 helpers, which would double-count samples. See the Codex M1.3 P2
 fix for the rationale.
 
-The 4 heroku smoke tasks land in ``smoke.py`` (M1.7, Layer 1).
+The 4 heroku smoke tasks land in ``smoke.py`` (M1.7a, Layer 1).
 """
 
+from caliper_browser_pilot.tasks.smoke import heroku_smoke
 from caliper_browser_pilot.tasks.v8_baseline import v8_baseline
 from caliper_browser_pilot.tasks.v8_buckets import (
     v8_compare,
@@ -24,6 +25,7 @@ from caliper_browser_pilot.tasks.v8_buckets import (
 )
 
 __all__ = [
+    "heroku_smoke",
     "v8_baseline",
     "v8_lookup",
     "v8_search",

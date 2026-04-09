@@ -493,23 +493,73 @@ columns we couldn't produce before.
   - ✓ New AGENT_BEHAVIOR failure class from the re-run is
     filed as its own follow-up instead of being hand-waved
 
-- [ ] **M1.7a** Heroku smoke task port
+- [ ] **M1.7a** Heroku smoke task port (code landed, live validation pending)
 
   Layer 1 smoke (per `test-sets.md`): 4 hand-written tasks against
   `the-internet.herokuapp.com`. Independent of WebVoyager. ~30s
   runtime; intended to run on every commit.
 
-  - Port 4 task definitions from
-    `~/Documents/Coding/browser-pilot/tests/agent/tasks/*.json` to
-    `caliper-browser-pilot/src/caliper_browser_pilot/tasks/smoke.py`
-  - Add a `smoke` `@task` that wires bp_agent + a faster judge
-    (or just exact-match scorer if the heroku tasks are
-    deterministic enough — TBD during implementation)
-  - Bundle data files via the same `package-data` declaration as
-    the v8 curated set
+  **Code status** — all landed, 15 unit tests passing:
+  - `packages/caliper/src/caliper/scorers/verify_commands.py` —
+    new tool-agnostic post-hoc verification scorer. Reads
+    `state.metadata["verify"]` as a list of `{command, expect_contains,
+    description}` specs, runs each via `run_cli`, returns CORRECT
+    iff every spec's substring appears in its command's output.
+    Deterministic, no LLM judge, no API spend — the whole point of
+    Layer 1 is fast + free CI.
+  - `packages/caliper/src/caliper/protocols.py` — added `verify`
+    to `OPTIONAL_METADATA_KEYS` so the task metadata validator
+    accepts it.
+  - `packages/caliper-browser-pilot/src/caliper_browser_pilot/tasks/smoke.py`
+    — new `heroku_smoke` `@task` with 4 hand-written Samples
+    (checkboxes, dropdown, dynamic_loading, login) ported verbatim
+    from `~/Documents/Coding/browser-pilot/tests/agent/tasks/`.
+    Uses `bp_agent()` solver with the M1.6b session prologue,
+    `verify_commands()` scorer.
+  - 15 unit tests (9 for `verify_commands` + 6 for the smoke task
+    construction). Total: 210 → **225**.
 
-  **Done when**: `inspect eval .../tasks/smoke.py` completes 4
-  samples without external network failures (modulo bp connect)
+  **Validation status** — BLOCKED on upstream outage:
+  - At M1.7a commit time, `the-internet.herokuapp.com` was
+    returning HTTP 503 "Application Error" on every path (verified
+    via `curl` from the host machine, not a bp/CDP issue). The
+    Heroku app is down and the smoke samples can't be run against
+    a dead target.
+  - The test-automation sandbox that browser-pilot has used since
+    v0 is a third-party Heroku free-tier app. This is exactly the
+    fragility risk the roadmap's "modulo bp connect" hedge was
+    trying to acknowledge — except the failure is even more
+    fundamental: the target site itself, not the tool connecting
+    to it.
+
+  **How to finish M1.7a** (once heroku is back):
+
+  ```bash
+  # Check the site is up first:
+  curl -sI https://the-internet.herokuapp.com/checkboxes | head -1
+  # Expect: HTTP/1.1 200 OK
+
+  # Then run the smoke eval:
+  uv run inspect eval \
+    packages/caliper-browser-pilot/src/caliper_browser_pilot/tasks/smoke.py@heroku_smoke \
+    --model anthropic/claude-sonnet-4-6 \
+    --max-samples 1 \
+    --log-dir logs
+  ```
+
+  Expected: 4 samples complete, pass count depends on how well
+  Sonnet handles each task. The done criterion is "inspect eval
+  completes 4 samples without external network failures", not
+  "all 4 pass" — a capability gap on e.g. the dynamic_loading
+  wait condition is a legit finding to record, not a blocker.
+  Record per-sample results here once the run completes, then
+  flip this milestone to `[x]`.
+
+  **Follow-up risk to address post-validation**: consider whether
+  to add a fallback test target (saucedemo.com, demoqa.com,
+  practice.expandtesting.com) or a local fixture server so Layer 1
+  smoke isn't wedged by third-party outages. Tracked separately
+  on the roadmap as M1.7a-fallback once this milestone closes.
 
 - [ ] **M1.7b** Retire browser-pilot legacy `run.py`
 

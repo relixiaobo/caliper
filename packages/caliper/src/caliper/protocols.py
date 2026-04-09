@@ -99,6 +99,10 @@ OPTIONAL_METADATA_KEYS = frozenset(
         "decay_rate",         # estimated freshness decay (low/med/high)
         "stability_score",    # CV across N runs (test-sets.md principle 3)
         "reference_type",     # "golden" | "possible"
+        "verify",             # Layer 1 deterministic post-hoc checks
+                              # consumed by caliper.scorers.verify_commands;
+                              # list of {command, expect_contains, description}
+                              # dicts. See caliper-browser-pilot tasks/smoke.py.
     }
 )
 
