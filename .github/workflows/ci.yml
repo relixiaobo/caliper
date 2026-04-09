@@ -46,7 +46,54 @@ jobs:
         run: uv sync --group dev
 
       - name: Run unit tests
+        # Self-eval API-gated tests (judge quality, stale-ref tolerance)
+        # skip here (no ANTHROPIC_API_KEY). They run in the self-eval
+        # job below. Free self-eval tests (lazy_e2e, usage_consistency,
+        # lazy_quality) run here and pass without any secrets.
         run: uv run pytest packages/ -q
 
       - name: Lint with ruff
         run: uv run ruff check .
+
+  self-eval:
+    # M2.6: LLM-based self-eval suite — judge quality + stale-ref
+    # tolerance. Catches scorer regressions that unit tests can't
+    # (e.g. a prompt edit that lowers judge accuracy). Costs ~$0.10
+    # per run (~75 LLM calls at temperature=0).
+    #
+    # Skips gracefully on forks and external PRs (no access to secrets).
+    # The API-free self-eval tests (lazy, usage consistency) already
+    # run in the main test job above.
+    name: Self-eval (scorer quality)
+    runs-on: ubuntu-latest
+    # Only run on pushes to main and PRs from the same repo (not forks,
+    # which don't have access to secrets).
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Sync dependencies
+        run: uv sync --group dev
+
+      - name: Run self-eval suite
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          echo "=== Caliper Self-Eval Suite ==="
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "ANTHROPIC_API_KEY not set — API-gated tests will skip."
+            echo "Set the secret in repo settings to enable scorer quality checks."
+          fi
+          echo ""
+          uv run pytest packages/caliper/tests/self_eval/ -v --tb=short
