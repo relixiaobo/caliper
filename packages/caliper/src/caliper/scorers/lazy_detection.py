@@ -25,6 +25,7 @@ from __future__ import annotations
 from inspect_ai.scorer import Score, Scorer, Target, mean, scorer
 
 from caliper.protocols import SolverState
+from caliper.scoring import score_lazy
 
 
 @scorer(metrics=[mean()])
@@ -33,11 +34,16 @@ def lazy_detection() -> Scorer:
 
     The score is ``1.0`` for "lazy" (bad) and ``0.0`` for "not lazy" (good),
     so the aggregated mean is the lazy-failure rate.
+
+    Internally delegates to ``caliper.scoring.score_lazy`` — the pure
+    function that implements the logic. This wrapper exists solely to
+    bridge the Inspect AI ``Scorer`` protocol (reads ``TaskState``)
+    with caliper's Inspect-AI-independent scoring kernel.
     """
 
     async def score(state, target: Target) -> Score:
         ss = state.store_as(SolverState)
-        is_lazy = bool(ss.agent_answer) and not ss.observed_page
+        is_lazy = score_lazy(ss.agent_answer, ss.observed_page)
         return Score(
             value=1.0 if is_lazy else 0.0,
             answer=ss.agent_answer,

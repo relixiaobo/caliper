@@ -78,7 +78,7 @@ def _run_scorer(
         return fake_outputs.get(key, "")
 
     scorer_factory = verify_commands(require_agent_answer=require_agent_answer)
-    with patch("caliper.scorers.verify_commands.run_cli", side_effect=fake_run_cli):
+    with patch("caliper.runtime.run_cli", side_effect=fake_run_cli):
         return asyncio.run(scorer_factory(state, _FakeTarget()))
 
 
@@ -252,7 +252,7 @@ def test_spec_with_empty_command_fails():
     )
     score = _run_scorer(state)
     assert score.value is False
-    assert "empty 'command'" in score.explanation
+    assert "empty command" in score.explanation
 
 
 # ---------------------------------------------------------------------------

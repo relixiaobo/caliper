@@ -45,11 +45,53 @@ from __future__ import annotations
 from typing import Any
 
 from caliper.record import CaliperRecord, JudgeResult, VerifyResult
-from caliper.scorers.judge_stale_ref import (
-    JUDGE_SYSTEM_PROMPT,
-    build_judge_prompt,
-)
 from caliper.scorers.json_verdict import parse_judge_verdict
+
+# ---------------------------------------------------------------------------
+# Judge prompt constants (shared by score_judge and judge_stale_ref scorer)
+# ---------------------------------------------------------------------------
+#
+# These lived in caliper.scorers.judge_stale_ref until the CaliperRecord
+# refactor, which created a circular import (scoring ↔ judge_stale_ref).
+# They now live here — the canonical location for caliper's measurement
+# logic — and judge_stale_ref.py imports them from here.
+
+JUDGE_SYSTEM_PROMPT = (
+    "You are an evaluator. Respond only with the JSON object requested."
+)
+
+
+def build_judge_prompt(goal: str, reference: str, agent_answer: str) -> str:
+    """Format the v8 stale-reference-tolerant judge prompt.
+
+    Verbatim port from ``docs/reference/inherited-artifacts.md`` §1. Any
+    change to this string must re-run the judge self-evaluation suite
+    (Phase 2 / M2.1).
+    """
+    return f"""You are grading whether a web agent correctly answered a question about a live website.
+
+Task: {goal}
+Reference answer (may be outdated — the benchmark was authored in 2023/2024): {reference}
+Agent's answer: {agent_answer}
+
+Grading rules:
+- The agent visited the live site NOW. If the task asks for "latest", "current",
+  "recent", or "most recent" data, the agent's answer reflects today's reality.
+  The reference may be stale. Accept factually-plausible current answers even when
+  the specific product version/name/date differs from the reference.
+  Example: reference says "MacBook Air M2 $1099"; agent says "MacBook Air M5 $1099" —
+  this is CORRECT (Apple moved to M5, prices held). Similarly iPhone 15 → iPhone 17.
+- For non-time-sensitive tasks (pronunciations, math, historical facts, fixed
+  documentation like "Enterprise has X GB more than Team"), the agent's answer must
+  match the reference's substantive content.
+- The agent's wording may differ but the substance must match.
+- Partial answers covering the key information count as correct.
+- An answer that describes how to do it without actually having done it is INCORRECT.
+- An answer that fabricates details the agent couldn't have verified is INCORRECT.
+- An empty or evasive answer is INCORRECT.
+
+Respond with ONLY a JSON object on a single line:
+{{"verdict": "correct"}} or {{"verdict": "incorrect", "reason": "<short reason>"}}"""
 
 
 # ---------------------------------------------------------------------------
