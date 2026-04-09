@@ -132,6 +132,7 @@ after Phase 2 — see [roadmap M3.0](docs/roadmap.md)):
 
 ## Quick links
 
+- **[Quick Start](docs/quick-start.md) — evaluate your agent in 5 minutes**
 - [Why this exists](docs/why.md) — the case for evidence-based iteration
 - [Methodology](docs/methodology.md) — the 5 core principles
 - [Architecture](docs/architecture.md) — two integration modes, what lives where
