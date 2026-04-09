@@ -558,20 +558,38 @@ columns we couldn't produce before.
   down when CI fires, all commits fail the smoke gate. File as
   M1.7a-fallback once M1.7b lands.
 
-- [ ] **M1.7b** Retire browser-pilot legacy `run.py`
+- [x] **M1.7b** Retire browser-pilot legacy `run.py` (2026-04-09)
 
-  Cross-repo cleanup. Touches browser-pilot's `tests/agent/`
-  (which `context.md` explicitly allows).
+  Cross-repo cleanup. Commit `0c5661c` in browser-pilot.
 
-  - Replace `browser-pilot/tests/agent/run.py` with a thin shim
-    that calls `inspect eval` against the caliper-based task
-    definitions
-  - Delete or move-to-legacy `v7_baseline.py`
-  - Update `npm run test:agent` if it lives in package.json
+  Delivered:
+  - `tests/agent/run.py` overwritten with a ~150-line shim that
+    invokes `uv run inspect eval ...@heroku_smoke --max-samples 1`
+    in the caliper repo. Legacy args (``--webvoyager``, ``--task``,
+    ``--id``, etc.) produce clear migration messages pointing at
+    the caliper equivalent. Caliper repo path is configurable via
+    `CALIPER_ROOT` env var (default `~/Documents/Coding/caliper`).
+  - `tests/agent/v7_baseline.py` deleted (its 12-task bucketed
+    driver was a wrapper around run.py; caliper's `v8_baseline`
+    @task is the direct replacement).
+  - `tests/agent/tasks/README.md` added, noting these JSON files
+    are the historical source for caliper's `heroku_smoke` and are
+    no longer authoritative.
+  - `package.json` unchanged — `"test:agent"` still points at
+    `python3 tests/agent/run.py`, which is now the shim.
+  - `download_data.py` kept for WebVoyager dataset downloads.
 
-  **Done when**: `npm run test:agent` (in browser-pilot) executes
-  caliper, not the legacy runner, and produces the same heroku
-  pass rate as M1.7a
+  Net deletion: **−1,042 lines** of duplicated agent/judge/loader/
+  verification code that caliper now owns.
+
+  Validation: `npm run test:agent` in browser-pilot → 4/4 heroku
+  smoke pass, accuracy=1.000, 1:02 wall time. Matches M1.7a's
+  direct caliper validation exactly.
+
+  **Phase 1 is now complete.** Every milestone from M0.1 through
+  M1.7b is `[x]`. The browser-pilot repo no longer maintains a
+  parallel agent evaluation stack; all measurement flows through
+  caliper.
 
 ### Phase 1 effects table
 
@@ -580,7 +598,7 @@ columns replace the original $ columns per the M1.2 re-scope.
 
 | Metric                       | v8 (run.py) | v9 (caliper) | Delta | Notes |
 |---|---|---|---|---|
-| Sonnet judge pass            | 23/24       | **19/24**    | -4    | 5 TOOL_LIMIT failures: SITE_RENDER×1 (Wolfram SVG), REF_STALE×1 (BBC 500), CHROME_TAB_POLLUTION×3 (Apple/Allrecipes/Huggingface) |
+| Sonnet judge pass            | 23/24       | **19/24**    | -4    | 5 TOOL_LIMIT: validated 4/1 CTP/AGENT_BEHAVIOR (M1.6b fix recovered 4 of 5; Apple is AGENT_BEHAVIOR) |
 | Sonnet Apple--3 failure      | run 2 fails | **both pass** | —     | Canary didn't trigger; max_turns still enforced via 5 other samples |
 | Sonnet total tokens          | ~292K       | **2,524,979** | 8.6×  | Retry loops in TOOL_LIMIT cases (Apple--0 ep 2: 137 commands in 12 turns) |
 | Sonnet mean tokens / run     | ~52K        | **105,208**  | 2.0×  | 5 failed runs drag the mean up |
