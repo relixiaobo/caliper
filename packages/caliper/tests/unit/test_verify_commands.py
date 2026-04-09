@@ -25,12 +25,33 @@ from unittest.mock import patch
 from caliper.scorers.verify_commands import verify_commands
 
 
-class _FakeState:
-    """Tiny stand-in for an Inspect AI TaskState. The scorer only
-    touches ``state.metadata``, so that's all we need."""
+class _FakeSolverState:
+    """Stand-in for ``caliper.protocols.SolverState`` — the scorer
+    reads ``.agent_answer`` off whatever ``state.store_as(SolverState)``
+    returns."""
 
-    def __init__(self, metadata: dict | None):
+    def __init__(self, agent_answer: str):
+        self.agent_answer = agent_answer
+
+
+class _FakeState:
+    """Tiny stand-in for an Inspect AI TaskState. The scorer touches:
+      - ``state.metadata`` for the verify specs
+      - ``state.store_as(SolverState).agent_answer`` when
+        ``require_agent_answer=True``
+
+    Default ``agent_answer`` is ``"done"`` (non-empty) so existing
+    happy-path tests continue to pass the implicit M1.7a-post-review
+    "did the agent actually finish" check. Pass ``agent_answer=""``
+    to exercise the new fail path.
+    """
+
+    def __init__(self, metadata: dict | None, agent_answer: str = "done"):
         self.metadata = metadata
+        self._agent_answer = agent_answer
+
+    def store_as(self, _cls):  # noqa: ARG002 — we don't care about the type
+        return _FakeSolverState(self._agent_answer)
 
 
 class _FakeTarget:
@@ -39,7 +60,12 @@ class _FakeTarget:
     text = ""
 
 
-def _run_scorer(state: _FakeState, *, fake_outputs: dict | None = None):
+def _run_scorer(
+    state: _FakeState,
+    *,
+    fake_outputs: dict | None = None,
+    require_agent_answer: bool = True,
+):
     """Invoke the scorer with a mocked run_cli. ``fake_outputs`` maps
     a tuple(argv) key to the string run_cli should return. Any command
     not in the map returns an empty string (which will usually fail
@@ -51,7 +77,7 @@ def _run_scorer(state: _FakeState, *, fake_outputs: dict | None = None):
         key = tuple(argv)
         return fake_outputs.get(key, "")
 
-    scorer_factory = verify_commands()
+    scorer_factory = verify_commands(require_agent_answer=require_agent_answer)
     with patch("caliper.scorers.verify_commands.run_cli", side_effect=fake_run_cli):
         return asyncio.run(scorer_factory(state, _FakeTarget()))
 
@@ -227,3 +253,110 @@ def test_spec_with_empty_command_fails():
     score = _run_scorer(state)
     assert score.value is False
     assert "empty 'command'" in score.explanation
+
+
+# ---------------------------------------------------------------------------
+# Agent-answer invariant (M1.7a Codex review P2a)
+# ---------------------------------------------------------------------------
+
+
+def test_verify_passes_but_empty_agent_answer_fails_by_default():
+    """The P2a fix: a sample where the browser state matches the
+    verify spec but the agent loop crashed / regressed / never
+    produced ANSWER should NOT score as CORRECT. This catches
+    solver-plumbing breakage that pure post-hoc DOM checks would
+    miss."""
+    state = _FakeState(
+        {
+            "verify": [
+                {
+                    "description": "Both checkboxes checked",
+                    "command": ["bp", "eval", "count"],
+                    "expect_contains": "2",
+                }
+            ]
+        },
+        agent_answer="",  # simulate solver-loop failure
+    )
+    score = _run_scorer(state, fake_outputs={("bp", "eval", "count"): "2\n"})
+    assert score.value is False
+    assert "no ANSWER:" in score.explanation
+    assert "SolverState.agent_answer is empty" in score.explanation
+
+
+def test_verify_passes_with_non_empty_agent_answer():
+    """Happy path: verify specs pass AND agent_answer is non-empty.
+    The explanation should surface the answer so it's visible in
+    the report."""
+    state = _FakeState(
+        {
+            "verify": [
+                {
+                    "description": "Both checkboxes checked",
+                    "command": ["bp", "eval", "count"],
+                    "expect_contains": "2",
+                }
+            ]
+        },
+        agent_answer="Done. Both boxes are now checked.",
+    )
+    score = _run_scorer(state, fake_outputs={("bp", "eval", "count"): "2\n"})
+    assert score.value is True
+    assert score.answer == "Done. Both boxes are now checked."
+    # Happy-path explanation should note the agent answer.
+    assert "agent_answer:" in score.explanation
+
+
+def test_require_agent_answer_false_tolerates_empty_answer():
+    """Opt-out: require_agent_answer=False lets verify-only tasks
+    pass without any ANSWER block. Intended for tasks whose
+    semantic is entirely "do X and leave the state visible" with
+    no agent narration."""
+    state = _FakeState(
+        {
+            "verify": [
+                {
+                    "description": "Both checkboxes checked",
+                    "command": ["bp", "eval", "count"],
+                    "expect_contains": "2",
+                }
+            ]
+        },
+        agent_answer="",
+    )
+    score = _run_scorer(
+        state,
+        fake_outputs={("bp", "eval", "count"): "2\n"},
+        require_agent_answer=False,
+    )
+    assert score.value is True
+    # With the check disabled, explanation should NOT mention
+    # agent_answer at all.
+    assert "agent_answer" not in score.explanation
+    assert "ANSWER" not in score.explanation
+
+
+def test_empty_answer_and_verify_failure_both_reported():
+    """Both failure modes should be surfaced in the same
+    explanation — one should not mask the other. Helpful when
+    debugging a regression that broke both the solver AND the
+    verification target simultaneously."""
+    state = _FakeState(
+        {
+            "verify": [
+                {
+                    "description": "Both checkboxes checked",
+                    "command": ["bp", "eval", "count"],
+                    "expect_contains": "2",
+                }
+            ]
+        },
+        agent_answer="",
+    )
+    score = _run_scorer(state, fake_outputs={("bp", "eval", "count"): "1\n"})
+    assert score.value is False
+    # Both the verify failure and the empty-answer failure should
+    # appear in the explanation.
+    assert "Both checkboxes checked" in score.explanation
+    assert "expected '2'" in score.explanation
+    assert "no ANSWER:" in score.explanation

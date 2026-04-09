@@ -59,17 +59,22 @@ from typing import Any
 
 from inspect_ai.scorer import Score, Scorer, Target, accuracy, scorer
 
+from caliper.protocols import SolverState
 from caliper.runtime import run_cli
 
 
 @scorer(metrics=[accuracy()])
-def verify_commands(cli_timeout: float = 30.0) -> Scorer:
+def verify_commands(
+    cli_timeout: float = 30.0,
+    require_agent_answer: bool = True,
+) -> Scorer:
     """Post-hoc verification scorer for deterministic tasks.
 
     Reads ``state.metadata["verify"]`` — a list of spec dicts, each
     with a ``command`` argv list and an ``expect_contains`` substring.
     Runs every command via ``run_cli`` and returns CORRECT iff all
-    specs' expectations are met.
+    specs' expectations are met AND (by default) the solver produced
+    a non-empty ``agent_answer``.
 
     Args:
         cli_timeout: Per-command subprocess timeout in seconds.
@@ -77,6 +82,14 @@ def verify_commands(cli_timeout: float = 30.0) -> Scorer:
             because verification commands are expected to be simple
             DOM reads that should return almost instantly. Raise it
             if a specific task needs heavier post-hoc work.
+        require_agent_answer: When True (default), the scorer also
+            asserts that ``SolverState.agent_answer`` is non-empty.
+            This catches the "browser state happens to match but the
+            solver loop broke / ANSWER extraction regressed / agent
+            timed out" failure mode that pure post-hoc DOM checks
+            would miss. Set to False only if your task intentionally
+            doesn't expect the agent to write an ``ANSWER:`` block
+            (rare — most Layer 1 smoke tasks do).
 
     The scorer is tool-agnostic. It only touches ``run_cli`` and the
     sample metadata. The ``cli_name`` is implied by ``spec["command"][0]``
@@ -101,6 +114,20 @@ def verify_commands(cli_timeout: float = 30.0) -> Scorer:
                 ),
                 metadata={"n_specs": 0},
             )
+
+        # Pull the solver's answer if the caller wants the "agent
+        # must have finished cleanly" invariant. Done BEFORE any
+        # verify step so an answer miss is always surfaced, even
+        # when the first verify step fails in some other way.
+        agent_answer = ""
+        if require_agent_answer:
+            try:
+                ss = state.store_as(SolverState)
+                agent_answer = ss.agent_answer
+            except Exception:
+                # state.store_as may not be available in tests that
+                # pass a _FakeState — treat as empty answer.
+                agent_answer = ""
 
         results: list[dict[str, Any]] = []
         failures: list[str] = []
@@ -152,12 +179,29 @@ def verify_commands(cli_timeout: float = 30.0) -> Scorer:
                     }
                 )
 
+        # Agent-answer check runs AFTER the verify specs so a broken
+        # solver loop and a broken verify spec both surface in the
+        # same explanation string instead of one short-circuiting
+        # the other.
+        if require_agent_answer and not agent_answer:
+            failures.append(
+                "agent produced no ANSWER: block (SolverState.agent_answer "
+                "is empty) — the solver loop may have crashed, timed out, "
+                "or regressed in answer extraction. Pass "
+                "require_agent_answer=False to disable this check."
+            )
+
         all_passed = not failures
         return Score(
             value=all_passed,
-            answer="",
+            answer=agent_answer,
             explanation=(
                 f"all {len(specs)} verify steps passed"
+                + (
+                    f" (agent_answer: {agent_answer[:80]!r})"
+                    if require_agent_answer and agent_answer
+                    else ""
+                )
                 if all_passed
                 else "; ".join(failures)
             ),

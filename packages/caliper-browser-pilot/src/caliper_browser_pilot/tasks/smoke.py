@@ -158,12 +158,25 @@ def _heroku_samples() -> list[Sample]:
                 "source": "the-internet.herokuapp.com",
                 "start_url": "https://the-internet.herokuapp.com/dynamic_loading/1",
                 "verify": [
+                    # The #finish h4 element exists in the DOM from the
+                    # initial page load — only its parent #finish has
+                    # display:none until the click+wait completes. A
+                    # naive textContent check therefore passes on a
+                    # no-op agent that never clicked Start (caught by
+                    # Codex review of the M1.7a commit). Gate on
+                    # visibility first, then return the text.
                     {
                         "description": "Hidden text is now visible",
                         "command": [
                             "bp",
                             "eval",
-                            "document.querySelector('#finish h4')?.textContent",
+                            (
+                                "window.getComputedStyle("
+                                "document.querySelector('#finish')"
+                                ").display === 'none' ? 'HIDDEN' : "
+                                "document.querySelector('#finish h4')"
+                                ".textContent.trim()"
+                            ),
                         ],
                         "expect_contains": "Hello World!",
                     },
@@ -228,6 +241,29 @@ def heroku_smoke(
 ) -> Task:
     """4 deterministic heroku smoke tasks, scored via verify_commands.
 
+    **IMPORTANT — must be run with ``--max-samples 1``.** This task
+    inherits ``bp_agent()``'s default session prologue, which is
+    documented as serial-only (see
+    ``caliper_browser_pilot.solver.BP_DEFAULT_SESSION_PROLOGUE``).
+    More fundamentally, ``bp`` itself is a process-global singleton
+    attached to the user's real Chrome — two concurrent bp samples
+    would race on the "active tab" state even *without* the
+    prologue. There is currently no parallel-safe bp story.
+
+    Run:
+
+    .. code-block:: shell
+
+        inspect eval .../tasks/smoke.py@heroku_smoke \\
+            --model anthropic/claude-sonnet-4-6 \\
+            --max-samples 1
+
+    Running without ``--max-samples 1`` will produce
+    nondeterministic failures that look like random bp/Chrome bugs
+    but are actually a parallelism-vs-bp mismatch. This is tracked
+    as a known limitation in ``docs/lessons-learned.md``'s M1.6b
+    section.
+
     Args:
         max_turns: Agent loop turn cap. Defaults to 10 — these tasks
             should all complete in 2-4 turns. 10 is a generous ceiling
@@ -236,13 +272,19 @@ def heroku_smoke(
             comparisons across ``bp_agent`` configurations (e.g.
             different prologues, different system prompts). Defaults
             to ``bp_agent()`` with the standard per-sample session
-            prologue.
+            prologue. If you need a parallel-safe variant, pass
+            ``bp_agent(session_prologue=[])`` — but note that
+            without the prologue the CHROME_TAB_POLLUTION guard is
+            gone and bp is still not concurrency-safe at the
+            active-tab level.
 
     Judging: this task does NOT use an LLM judge. It uses
     ``verify_commands`` which runs the deterministic post-hoc checks
-    listed in each sample's ``metadata["verify"]`` via ``run_cli``.
-    That means the smoke tier can run on machines with no model API
-    credentials — only a working bp + Chrome connection is required.
+    listed in each sample's ``metadata["verify"]`` via ``run_cli``,
+    and also asserts the agent produced a non-empty ``ANSWER:``
+    block. That means the smoke tier can run on machines with no
+    model API credentials — only a working bp + Chrome connection
+    is required.
     """
     return Task(
         dataset=heroku_smoke_dataset(),
