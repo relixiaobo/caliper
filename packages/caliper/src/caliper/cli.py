@@ -127,6 +127,20 @@ def cmd_diff(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_diagnose(args: argparse.Namespace) -> int:
+    from caliper.diagnostics import diagnose_log, render_diagnostics
+
+    if not args.log.exists():
+        print(f"caliper diagnose: log not found: {args.log}", file=sys.stderr)
+        return 2
+
+    findings = diagnose_log(str(args.log))
+    print(render_diagnostics(findings))
+
+    n_warnings = sum(1 for f in findings if f.severity == "warning")
+    return 1 if n_warnings > 0 else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="caliper",
@@ -139,6 +153,20 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="<command>",
         required=True,
     )
+
+    p_diagnose = sub.add_parser(
+        "diagnose",
+        help="analyze an .eval log for measurement issues",
+        description=(
+            "Run caliper's diagnostic checkers on an .eval log and "
+            "surface potential measurement issues: task stability, "
+            "scorer contradictions, agent behavior anomalies, cache "
+            "problems. No agent re-run needed — pure analysis of "
+            "existing data. Exit code 1 if any warnings found."
+        ),
+    )
+    p_diagnose.add_argument("log", type=Path, help="path to .eval log file")
+    p_diagnose.set_defaults(func=cmd_diagnose)
 
     p_report = sub.add_parser(
         "report",
