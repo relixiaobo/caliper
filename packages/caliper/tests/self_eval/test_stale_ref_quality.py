@@ -133,6 +133,7 @@ def test_overall_and_per_quadrant_accuracy():
         "non_stale_wrong",
         "stale_correct",
         "stale_wrong",
+        "plausible_but_false",
     ]:
         wrong = by_quad_wrong.get(quad, 0)
         right = by_quad[quad] - wrong

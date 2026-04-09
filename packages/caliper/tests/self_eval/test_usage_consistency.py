@@ -226,3 +226,170 @@ def test_pass_count_matches_filter():
     report = BucketReport.from_sample_results(results, task_name="test")
     assert report.overall.pass_count == 2
     assert report.overall.n_runs == 3
+
+
+# ---------------------------------------------------------------------------
+# Scenario 4: Real ModelUsage fixtures through from_model_usage
+# (Codex adversarial review fix: exercise the REAL construction path,
+# not pre-computed UsageSummary objects, and compare against raw
+# arithmetic that does NOT call __add__)
+# ---------------------------------------------------------------------------
+
+
+def _mk_from_model_usage(
+    sample_id: str,
+    bucket: str,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read: int | None = None,
+    cache_write: int | None = None,
+    reasoning: int | None = None,
+    model: str | None = None,
+) -> SampleResult:
+    """Build a SampleResult through the REAL from_model_usage path."""
+    from inspect_ai.model import ModelUsage
+
+    mu = ModelUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=input_tokens
+        + output_tokens
+        + (cache_read or 0)
+        + (cache_write or 0),
+        input_tokens_cache_read=cache_read,
+        input_tokens_cache_write=cache_write,
+        reasoning_tokens=reasoning,
+    )
+    usage = UsageSummary.from_model_usage(mu, model=model)
+    return SampleResult(
+        sample_id=sample_id,
+        epoch=1,
+        bucket=bucket,
+        judge_passed=True,
+        is_lazy=False,
+        usage=usage,
+    )
+
+
+def test_real_model_usage_anthropic_vs_raw_arithmetic():
+    """Construct SampleResults through from_model_usage (the real
+    production path), then compare BucketReport totals against
+    raw field-by-field arithmetic (NO __add__, NO UsageSummary
+    operations). This is the Codex adversarial review fix: the
+    'independent' path must be genuinely independent."""
+    results = [
+        _mk_from_model_usage(
+            "a1",
+            "lookup",
+            input_tokens=1000,
+            output_tokens=200,
+            cache_read=500,
+            cache_write=50,
+        ),
+        _mk_from_model_usage(
+            "a2",
+            "lookup",
+            input_tokens=800,
+            output_tokens=300,
+            cache_read=200,
+            cache_write=0,
+        ),
+    ]
+
+    report = BucketReport.from_sample_results(results, task_name="test")
+    u = report.overall.total_usage
+
+    # Raw arithmetic — no UsageSummary methods, just Python math.
+    raw_input = 1000 + 800
+    raw_output = 200 + 300
+    raw_cache_read = 500 + 200
+    raw_cache_write = 50 + 0
+    raw_total_input = raw_input + raw_cache_read + raw_cache_write
+    raw_total = raw_total_input + raw_output
+    raw_uncached = raw_input + raw_cache_write
+    raw_cache_aware = raw_total_input  # both are Anthropic, all cache-aware
+    raw_cache_hit = raw_cache_read / raw_cache_aware
+
+    assert u.input_tokens == raw_input
+    assert u.output_tokens == raw_output
+    assert u.cache_read_tokens == raw_cache_read
+    assert u.cache_write_tokens == raw_cache_write
+    assert u.total_input_tokens == raw_total_input
+    assert u.total_tokens == raw_total
+    assert u.uncached_input_tokens == raw_uncached
+    assert u.cache_aware_input_tokens == raw_cache_aware
+    assert u.cache_hit_rate == raw_cache_hit
+
+
+def test_real_model_usage_mixed_providers_vs_raw_arithmetic():
+    """Mixed Anthropic + Bedrock through from_model_usage, compared
+    against raw arithmetic with explicit cache-aware denominator
+    logic."""
+    results = [
+        # Anthropic: has cache info
+        _mk_from_model_usage(
+            "anthropic-1",
+            "compare",
+            input_tokens=400,
+            output_tokens=100,
+            cache_read=600,
+            cache_write=0,
+        ),
+        # Bedrock: no cache info (None fields)
+        _mk_from_model_usage(
+            "bedrock-1",
+            "compare",
+            input_tokens=500,
+            output_tokens=150,
+            # cache_read=None, cache_write=None (defaults)
+        ),
+    ]
+
+    report = BucketReport.from_sample_results(results, task_name="test")
+    u = report.overall.total_usage
+
+    # Raw arithmetic with explicit cache-aware logic.
+    # Anthropic sample: input=400, cache_read=600, cache_write=0
+    #   total_input = 400+600+0 = 1000, cache_aware_input = 1000
+    # Bedrock sample: input=500, cache_read=0(None→0), cache_write=0(None→0)
+    #   total_input = 500, cache_aware_input = 0 (has_cache_info=False)
+    raw_input = 400 + 500
+    raw_output = 100 + 150
+    raw_cache_read = 600 + 0
+    raw_total_input = raw_input + raw_cache_read  # 900 + 600 = 1500
+    raw_cache_aware = 1000 + 0  # only Anthropic contributes
+    raw_cache_hit = 600 / 1000  # 0.6 — Bedrock excluded from denominator
+
+    assert u.input_tokens == raw_input
+    assert u.output_tokens == raw_output
+    assert u.cache_read_tokens == raw_cache_read
+    assert u.total_input_tokens == raw_total_input
+    assert u.cache_aware_input_tokens == raw_cache_aware
+    assert u.cache_hit_rate == raw_cache_hit
+    assert u.has_cache_info is True  # at least one has it
+
+
+def test_real_model_usage_openai_responses_cold_cache():
+    """OpenAI Responses adapter (gpt-5): cache_read=None means cold
+    cache, NOT 'unknown'. With model hint, from_model_usage should
+    treat it as 0 and has_cache_info=True."""
+    results = [
+        _mk_from_model_usage(
+            "gpt5-1",
+            "search",
+            input_tokens=2000,
+            output_tokens=500,
+            # cache_read=None → cold cache with model hint
+            model="openai/gpt-5.4",
+        ),
+    ]
+
+    report = BucketReport.from_sample_results(results, task_name="test")
+    u = report.overall.total_usage
+
+    assert u.input_tokens == 2000
+    assert u.output_tokens == 500
+    assert u.cache_read_tokens == 0  # None → 0 with model hint
+    assert u.has_cache_info is True
+    assert u.cache_hit_rate == 0.0  # cold cache, not unknown
