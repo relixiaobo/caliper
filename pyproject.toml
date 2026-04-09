@@ -62,3 +62,6 @@ pythonpath = [
     "packages/caliper-computer-pilot/src",
     "packages/caliper-chatbot/src",
 ]
+markers = [
+    "self_eval: tests that call real LLMs and cost API money (not run by default)",
+]
