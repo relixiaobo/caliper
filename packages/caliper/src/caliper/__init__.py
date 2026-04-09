@@ -25,9 +25,11 @@ thin wrappers around the pure functions in ``caliper.scoring``.
 
 __version__ = "0.0.1"
 
+from caliper.evaluator import CaliperEvaluator
 from caliper.record import CaliperRecord, JudgeResult, VerifyResult
 
 __all__ = [
+    "CaliperEvaluator",
     "CaliperRecord",
     "JudgeResult",
     "VerifyResult",

@@ -45,7 +45,14 @@ from __future__ import annotations
 from typing import Any
 
 from caliper.record import CaliperRecord, JudgeResult, VerifyResult
-from caliper.scorers.json_verdict import parse_judge_verdict
+
+# NOTE: parse_judge_verdict is imported lazily inside score_judge()
+# to avoid a circular import. The chain is:
+#   caliper.scoring → caliper.scorers.json_verdict
+#   → caliper.scorers.__init__ → caliper.scorers.judge_stale_ref
+#   → caliper.scoring (cycle!)
+# Lazy import breaks the cycle: at module load time scoring.py
+# doesn't touch caliper.scorers; at call time everything is loaded.
 
 # ---------------------------------------------------------------------------
 # Judge prompt constants (shared by score_judge and judge_stale_ref scorer)
@@ -190,6 +197,9 @@ async def score_judge(
             ChatMessageUser(content=prompt),
         ]
     )
+
+    # Lazy import — see module-level comment about the circular chain.
+    from caliper.scorers.json_verdict import parse_judge_verdict
 
     passed, reason = parse_judge_verdict(result.completion)
     return JudgeResult(
