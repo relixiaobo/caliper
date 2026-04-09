@@ -69,6 +69,10 @@ def cmd_score(args: argparse.Namespace) -> int:
         )
         return 2
 
+    if not raw:
+        print("caliper score: records array is empty", file=sys.stderr)
+        return 2
+
     try:
         records = [CaliperRecord(**r) for r in raw]
     except TypeError as e:

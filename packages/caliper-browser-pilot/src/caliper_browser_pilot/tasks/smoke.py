@@ -56,7 +56,7 @@ from inspect_ai.dataset import MemoryDataset, Sample
 from inspect_ai.solver import Solver
 
 from caliper.runtime import load_dotenv
-from caliper.scorers import verify_commands
+from caliper.scorers import lazy_detection, verify_commands
 
 from caliper_browser_pilot.solver import bp_agent
 
@@ -289,5 +289,5 @@ def heroku_smoke(
     return Task(
         dataset=heroku_smoke_dataset(),
         solver=solver or bp_agent(max_turns=max_turns),
-        scorer=verify_commands(),
+        scorer=[verify_commands(), lazy_detection()],
     )

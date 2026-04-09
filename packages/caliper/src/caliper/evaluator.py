@@ -139,10 +139,15 @@ class CaliperEvaluator:
             is_lazy = score_lazy(record.agent_answer, record.observed)
 
             # Step 2: determine pass/fail.
-            judge_passed = False
+            # Judge and verify are NOT mutually exclusive — a record
+            # can carry both a reference_answer AND verify specs.
+            # When both are present, BOTH must pass for judge_passed
+            # to be True. This was a P2 finding in Codex review:
+            # the original elif made them exclusive, which meant a
+            # mixed-mode task could report passing when verify fails.
+            judge_passed = True  # innocent until proven guilty
 
             if record.reference_answer:
-                # Has a reference → run LLM judge.
                 result = await score_judge(
                     goal=record.goal,
                     agent_answer=record.agent_answer,
@@ -150,17 +155,20 @@ class CaliperEvaluator:
                     judge_model=self.judge_model,
                     judge_prompt=self.judge_prompt,
                 )
-                judge_passed = result.passed
+                judge_passed = judge_passed and result.passed
 
-            elif record.verify_specs or record.verify_results:
-                # Has verification → run verify.
+            if record.verify_specs or record.verify_results:
                 result = await score_verify(
                     verify_specs=record.verify_specs,
                     verify_results=record.verify_results,
                 )
-                judge_passed = result.passed
+                judge_passed = judge_passed and result.passed
 
-            else:
+            if (
+                not record.reference_answer
+                and not record.verify_specs
+                and not record.verify_results
+            ):
                 # No judge, no verify → pass if agent answered
                 # (lazy-only mode).
                 judge_passed = bool(record.agent_answer)
