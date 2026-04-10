@@ -88,7 +88,10 @@ def cmd_score(args: argparse.Namespace) -> int:
 
     if args.output:
         out_path = Path(args.output)
+        # Infer project from first record if available.
+        project = next((r.get("project") for r in raw if r.get("project")), None)
         out_data = {
+            "project": project,
             "task_name": report.task_name,
             "model_name": report.model_name,
             "overall": {

@@ -184,10 +184,21 @@ class CaliperEvaluator:
                 )
             )
 
+        # Auto-infer task_name and model_name from records if not
+        # explicitly provided. Uses the first record's project/model
+        # as a reasonable default for single-project evaluations.
+        effective_task = task_name
+        if not effective_task and records[0].project:
+            effective_task = records[0].project
+
+        effective_model = model_name
+        if not effective_model and records[0].model:
+            effective_model = records[0].model
+
         return BucketReport.from_sample_results(
             sample_results,
-            task_name=task_name,
-            model_name=model_name,
+            task_name=effective_task,
+            model_name=effective_model,
         )
 
     def diff(self, baseline: BucketReport, candidate: BucketReport) -> ABDiff:

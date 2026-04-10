@@ -1027,6 +1027,53 @@ the original $-based columns per M1.2.
 
 ---
 
+---
+
+## Phase 4 — Cross-project log aggregation + self-evolution
+
+**Goal**: When multiple projects integrate caliper, the framework
+benefits from the combined data — discovering patterns that no
+single project could see alone.
+
+**Trigger**: After caliper is on PyPI and at least 2 projects are
+producing CaliperRecord data or .eval logs independently.
+
+**Forward-compatible preparation** (done in Phase 2):
+- `CaliperRecord.project` field added — provenance tag for
+  cross-project attribution
+- `CaliperRecord.model` field added — agent model identifier
+- `caliper diagnose` produces findings that aggregate naturally
+  across logs (same Finding structure, same severity/category)
+
+**Milestones**:
+
+- [ ] **M4.1** `caliper.store` — local SQLite-based log store
+  - `caliper store submit report.json --project my-agent`
+  - `caliper store query --project my-agent --since 2026-04-01`
+  - `caliper diagnose --aggregate ~/projects/*/logs/`
+  - ~200 lines. No network, no API, just a local DB.
+
+- [ ] **M4.2** Ground truth expansion from overrides
+  - When a user marks a judge verdict as wrong (`caliper override
+    <sample_id> correct`), the override is stored and automatically
+    becomes a new test case in the M2.1 self-eval suite
+  - This closes the self-evolution loop: production usage improves
+    the measurement layer without manual hand-labeling
+
+- [ ] **M4.3** Cross-project drift detection
+  - Compare scorer accuracy / pass rates / cache patterns across
+    projects over time
+  - "Judge accuracy on project A dropped 8% this week — model
+    update? prompt change? new task type?"
+  - Builds on `caliper diagnose` + `caliper.store`
+
+- [ ] **M4.4** API service (optional, only if scale warrants)
+  - FastAPI + Postgres for centralized log collection
+  - Dashboard for cross-project trends
+  - Only build if >5 projects are actively using caliper
+
+---
+
 ## Open questions
 
 Rolling list of decisions still needed. Closed questions are

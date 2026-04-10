@@ -121,6 +121,25 @@ class CaliperRecord:
     """Epoch number for multi-run variance measurement. Projects
     running N≥2 epochs per sample set this to 1, 2, ... N."""
 
+    # ── Optional: provenance ──────────────────────────────────────
+    project: str = ""
+    """Identifier for the project that produced this record (e.g.
+    ``"browser-pilot"``, ``"my-chatbot"``, ``"internal-rag-agent"``).
+    Used by ``caliper.store`` (Phase 4) for cross-project aggregation
+    and drift detection. Not used by any scorer — purely provenance.
+
+    When multiple projects submit eval data to the same caliper
+    log store, this field is what distinguishes "project A's judge
+    accuracy is 96% and project B's is 82%" from "the overall
+    average is 89%". Without it, cross-project analysis can't
+    attribute findings to specific projects."""
+
+    model: str = ""
+    """Identifier for the agent model (e.g.
+    ``"anthropic/claude-sonnet-4-6"``, ``"openai/gpt-5.4"``).
+    Surfaced in ``BucketReport.model_name`` and in the
+    ``caliper diagnose`` output. Not used by any scorer."""
+
     metadata: dict[str, Any] = field(default_factory=dict)
     """Arbitrary project-specific metadata. caliper passes it
     through to reports without interpreting it."""
